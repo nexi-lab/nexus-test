@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# nexus-test — wrapper for running Nexus E2E tests via pytest markers.
+#
+# Usage:
+#   nexus-test quick                     # Smoke tests (< 2 min)
+#   nexus-test auto                      # Full regression (~15 min)
+#   nexus-test kernel                    # Kernel feature tests
+#   nexus-test "quick and kernel"        # Intersection
+#   nexus-test federation -n 4           # Parallel federation tests
+#
+# Passes all extra arguments to pytest.
+
+set -euo pipefail
+
+GROUP="${1:?Usage: nexus-test <group|expression> [pytest-args...]}"
+shift
+
+exec uv run pytest -m "${GROUP}" "$@"

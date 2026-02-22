@@ -1,0 +1,67 @@
+name: Quick Smoke Tests
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: quick-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXUS_TEST_URL: http://localhost:2026
+  NEXUS_TEST_API_KEY: sk-test-federation-e2e-admin-key
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Checkout nexus repo
+        uses: actions/checkout@v4
+        with:
+          repository: nexi-lab/nexus
+          path: nexus
+          ref: develop
+
+      - name: Start cluster
+        working-directory: nexus
+        run: |
+          docker compose -f dockerfiles/docker-compose.demo.yml up -d --wait --wait-timeout 180
+
+      - name: Run smoke tests
+        run: uv run pytest -m quick --tb=short --junitxml=results-smoke.xml
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results
+          path: results-smoke.xml
+
+      - name: Collect logs on failure
+        if: failure()
+        working-directory: nexus
+        run: |
+          mkdir -p /tmp/logs
+          docker compose -f dockerfiles/docker-compose.demo.yml logs > /tmp/logs/cluster.log 2>&1
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-logs
+          path: /tmp/logs/
+
+      - name: Teardown
+        if: always()
+        working-directory: nexus
+        run: docker compose -f dockerfiles/docker-compose.demo.yml down -v

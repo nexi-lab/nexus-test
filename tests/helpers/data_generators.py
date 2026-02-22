@@ -1,0 +1,185 @@
+"""Test data generation and seeding helpers.
+
+Provides utilities for:
+    - Generating file trees of configurable depth/breadth
+    - Loading benchmark data files from disk
+    - Seeding a zone with test data for performance/stress tests
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tests.helpers.api_client import NexusClient
+
+
+# ---------------------------------------------------------------------------
+# Result models (immutable)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TreeStats:
+    """Statistics from a generated file tree."""
+
+    files_created: int
+    dirs_created: int
+    total_bytes: int
+    base_path: str
+
+
+@dataclass(frozen=True)
+class SeedResult:
+    """Result of a data seeding operation."""
+
+    files_seeded: int
+    zones_seeded: list[str]
+    errors: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Tree generation
+# ---------------------------------------------------------------------------
+
+
+def generate_tree(
+    nexus: NexusClient,
+    base_path: str,
+    *,
+    depth: int = 3,
+    breadth: int = 3,
+) -> TreeStats:
+    """Generate a file tree of configurable depth and breadth.
+
+    Creates directories ``depth`` levels deep, each with ``breadth``
+    subdirectories and one file per directory.
+
+    Args:
+        nexus: NexusClient to use for file operations.
+        base_path: Root path for the tree (e.g. /test-data/tree).
+        depth: Number of directory levels to create.
+        breadth: Number of subdirectories per level.
+
+    Returns:
+        TreeStats with counts of created files and directories.
+    """
+    files_created = 0
+    dirs_created = 0
+    total_bytes = 0
+
+    def _build(path: str, current_depth: int) -> None:
+        nonlocal files_created, dirs_created, total_bytes
+
+        nexus.mkdir(path, parents=True)
+        dirs_created += 1
+
+        # Create a file in each directory
+        content = f"file at depth {current_depth} in {path}"
+        nexus.write_file(f"{path}/data.txt", content)
+        files_created += 1
+        total_bytes += len(content.encode())
+
+        if current_depth < depth:
+            for i in range(breadth):
+                _build(f"{path}/dir_{i}", current_depth + 1)
+
+    _build(base_path, 1)
+
+    return TreeStats(
+        files_created=files_created,
+        dirs_created=dirs_created,
+        total_bytes=total_bytes,
+        base_path=base_path,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Benchmark file loading
+# ---------------------------------------------------------------------------
+
+
+def load_benchmark_files(benchmark_dir: str | Path) -> dict[str, list[Path]]:
+    """Load benchmark data files from disk, grouped by extension.
+
+    Scans the benchmark directory for files and groups them by suffix.
+    Returns an empty dict if the directory doesn't exist or is empty.
+
+    Args:
+        benchmark_dir: Path to the benchmarks directory.
+
+    Returns:
+        Dict mapping extensions (e.g. ".txt", ".json") to lists of Paths.
+    """
+    root = Path(benchmark_dir).expanduser().resolve()
+    if not root.is_dir():
+        return {}
+
+    result: dict[str, list[Path]] = {}
+    for file_path in root.rglob("*"):
+        if file_path.is_file():
+            ext = file_path.suffix or ".noext"
+            result.setdefault(ext, []).append(file_path)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Zone seeding
+# ---------------------------------------------------------------------------
+
+
+def seed_herb_data(
+    nexus: NexusClient,
+    zone: str,
+    benchmark_dir: str | Path,
+    *,
+    max_files: int = 100,
+) -> SeedResult:
+    """Seed a zone with benchmark data files.
+
+    Reads files from ``benchmark_dir`` and writes them into the given zone
+    under ``/seed-data/``. Stops after ``max_files``.
+
+    Args:
+        nexus: NexusClient to use for file operations.
+        zone: Zone ID to seed data into.
+        benchmark_dir: Path to benchmark data on disk.
+        max_files: Maximum number of files to seed.
+
+    Returns:
+        SeedResult with count of seeded files and any errors.
+    """
+    files_by_ext = load_benchmark_files(benchmark_dir)
+    if not files_by_ext:
+        return SeedResult(files_seeded=0, zones_seeded=[], errors=[])
+
+    seeded = 0
+    errors: list[str] = []
+
+    for ext, paths in files_by_ext.items():
+        for file_path in paths:
+            if seeded >= max_files:
+                break
+
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+                remote_path = f"/seed-data/{file_path.name}"
+                resp = nexus.write_file(remote_path, content, zone=zone)
+                if resp.ok:
+                    seeded += 1
+                else:
+                    errors.append(f"Failed to write {remote_path}: {resp.error}")
+            except Exception as exc:
+                errors.append(f"Error reading {file_path}: {exc}")
+
+        if seeded >= max_files:
+            break
+
+    return SeedResult(
+        files_seeded=seeded,
+        zones_seeded=[zone] if seeded > 0 else [],
+        errors=errors,
+    )

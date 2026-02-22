@@ -1,0 +1,76 @@
+name: Federation & Chaos Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/federation/**'
+      - 'tests/chaos/**'
+  schedule:
+    - cron: '0 4 * * 0'  # Weekly on Sunday at 4 AM UTC
+
+concurrency:
+  group: federation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXUS_TEST_URL: http://localhost:2026
+  NEXUS_TEST_URL_FOLLOWER: http://localhost:2027
+  NEXUS_TEST_API_KEY: sk-test-federation-e2e-admin-key
+  HYPOTHESIS_PROFILE: ci
+
+jobs:
+  federation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Checkout nexus repo
+        uses: actions/checkout@v4
+        with:
+          repository: nexi-lab/nexus
+          path: nexus
+          ref: develop
+
+      - name: Start 3-node Raft cluster
+        working-directory: nexus
+        run: |
+          docker compose -f dockerfiles/docker-compose.cross-platform-test.yml up -d --wait --wait-timeout 300
+
+      - name: Run federation tests
+        run: uv run pytest -m federation --timeout=300 --junitxml=results-federation.xml
+
+      - name: Run chaos tests
+        run: uv run pytest -m chaos --timeout=300 --junitxml=results-chaos.xml
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: federation-results
+          path: results-*.xml
+
+      - name: Collect logs on failure
+        if: failure()
+        working-directory: nexus
+        run: |
+          mkdir -p /tmp/logs
+          docker compose -f dockerfiles/docker-compose.cross-platform-test.yml logs > /tmp/logs/cluster.log 2>&1
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-logs
+          path: /tmp/logs/
+
+      - name: Teardown
+        if: always()
+        working-directory: nexus
+        run: docker compose -f dockerfiles/docker-compose.cross-platform-test.yml down -v

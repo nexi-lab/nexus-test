@@ -1,0 +1,113 @@
+name: Full Regression
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * *'  # Nightly at 2 AM UTC
+
+concurrency:
+  group: auto-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXUS_TEST_URL: http://localhost:2026
+  NEXUS_TEST_API_KEY: sk-test-federation-e2e-admin-key
+  HYPOTHESIS_PROFILE: ci
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Checkout nexus repo
+        uses: actions/checkout@v4
+        with:
+          repository: nexi-lab/nexus
+          path: nexus
+          ref: develop
+
+      - name: Start cluster
+        working-directory: nexus
+        run: |
+          docker compose -f dockerfiles/docker-compose.demo.yml up -d --wait --wait-timeout 180
+
+      - name: Run full regression
+        run: |
+          uv run pytest -m auto \
+            -n 4 \
+            --timeout=120 \
+            --junitxml=results-auto.xml
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-results
+          path: results-auto.xml
+
+      - name: Collect logs on failure
+        if: failure()
+        working-directory: nexus
+        run: |
+          mkdir -p /tmp/logs
+          docker compose -f dockerfiles/docker-compose.demo.yml logs > /tmp/logs/cluster.log 2>&1
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-logs
+          path: /tmp/logs/
+
+      - name: Teardown
+        if: always()
+        working-directory: nexus
+        run: docker compose -f dockerfiles/docker-compose.demo.yml down -v
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: regression
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Checkout nexus repo
+        uses: actions/checkout@v4
+        with:
+          repository: nexi-lab/nexus
+          path: nexus
+          ref: develop
+
+      - name: Start cluster
+        working-directory: nexus
+        run: |
+          docker compose -f dockerfiles/docker-compose.demo.yml up -d --wait --wait-timeout 180
+
+      - name: Run security tests
+        run: uv run pytest -m security --timeout=120 --junitxml=results-security.xml
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-results
+          path: results-security.xml
+
+      - name: Teardown
+        if: always()
+        working-directory: nexus
+        run: docker compose -f dockerfiles/docker-compose.demo.yml down -v

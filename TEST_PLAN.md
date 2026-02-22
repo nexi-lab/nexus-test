@@ -161,6 +161,7 @@ docker start nexus-node-1
 | `delegation` | Delegation chains, TTL, scoped delegation |
 | `workflow` | Workflow definition, execution, branching |
 | `ipc` | Inter-process messaging, named pipes |
+
 | `watch` | File event subscriptions |
 | `cache` | Cache stats, invalidation, eviction, write buffer |
 | `versioning` | Version history, time travel, diff, restore |

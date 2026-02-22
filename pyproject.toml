@@ -1,0 +1,129 @@
+[project]
+name = "nexus-test"
+version = "0.1.0"
+description = "E2E test suite for Nexus AI Filesystem (~355 tests)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+dependencies = [
+    # HTTP client (sync + async, HTTP/2)
+    "httpx[http2]>=0.28",
+    # Configuration (type-safe settings with .env support)
+    "pydantic>=2.5",
+    "pydantic-settings>=2.7",
+    # Testing framework
+    "pytest>=8.3",
+    "pytest-asyncio>=1.0",
+    "pytest-timeout>=2.3",
+    "pytest-xdist>=3.5",
+    # Property-based testing
+    "hypothesis>=6.120",
+    # Container orchestration
+    "testcontainers[compose]>=4.9",
+    # Retry logic (cluster readiness)
+    "tenacity>=9.0",
+]
+
+[dependency-groups]
+ci = [
+    "pytest-cov>=6.0",
+]
+lint = [
+    "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+asyncio_mode = "auto"
+
+# Strict markers: typos in marker names cause errors
+addopts = [
+    "--strict-markers",
+    "--tb=short",
+    "-ra",
+    "-q",
+]
+
+# --- Run-type group markers ---
+markers = [
+    "quick: Smoke tests — core happy paths (< 2 min)",
+    "auto: Full regression — all non-dangerous tests (~15 min)",
+    "stress: Concurrency, large data, resource limits (~30 min)",
+    "dangerous: May crash the server or corrupt data (manual only)",
+    "perf: Performance benchmarks with baselines (~10 min)",
+    "federation: Requires 2+ connected nodes (~20 min)",
+    "portability: Export/import, migration (~10 min)",
+    "contract: SDK-API contract verification (~3 min)",
+    "chaos: Fault injection, partition, corruption (~30 min)",
+    "security: OWASP API Top 10, injection, authz bypass (~10 min)",
+    "property: Property-based / fuzz testing (Hypothesis) (~15 min)",
+    "cli: CLI command E2E via subprocess (~5 min)",
+    "upgrade: Version upgrade + rollback verification (~20 min)",
+    "slo: Performance SLO compliance (p50/p95/p99) (~10 min)",
+    # --- Feature group markers ---
+    "kernel: Core FS — read, write, delete, mkdir, glob, grep, CAS",
+    "zone: Multi-tenancy, zone isolation, zone lifecycle",
+    "hooks: VFS pre/post write hooks",
+    "rebac: Permissions — grant, check, revoke, groups, inheritance",
+    "memory: Memory store, query, consolidation, trajectories",
+    "search: Full-text, semantic, mobile search",
+    "pay: Credits, X402, ledger, spend limits",
+    "llm: Completions, streaming, RAG, token counting",
+    "mcp: MCP tool registry, execution, server mode",
+    "sandbox: Sandbox create, execute, limits, cleanup",
+    "snapshot: Point-in-time capture, restore, zero-copy",
+    "skills: Register, execute, version, export",
+    "governance: Anomaly detection, fraud, suspension",
+    "reputation: Scoring, leaderboard, Sybil resistance",
+    "delegation: Delegation chains, TTL, scoped delegation",
+    "workflow: Workflow definition, execution, branching",
+    "ipc: Inter-process messaging, named pipes",
+    "watch: File event subscriptions",
+    "cache: Cache stats, invalidation, eviction",
+    "versioning: Version history, time travel, diff, restore",
+    "upload: Chunked TUS upload, resume, concurrent",
+    "auth: API key, OAuth, sessions, rate limiting",
+    "mount: Mount/unmount, permissions, auto-provision",
+    "namespace: Namespace CRUD, routing, quota",
+    "agent: Agent registry, heartbeat, capabilities, lifecycle",
+    "scheduler: Task scheduling, cron, retry, priority",
+    "eventlog: Event emission, filtering, replay",
+    "sync: Sync jobs, conflict detection/resolution",
+    "locks: Distributed locks, contention, deadlock detection",
+    "audit: Operation history, secrets audit, tamper detection",
+    "a2a: Agent-to-agent protocol — task creation, artifact delivery",
+    "discovery: Tool search (BM25), MCP server enumeration",
+    "manifest: Context manifest — source resolution, template vars",
+    "playbook: Playbook CRUD, usage tracking",
+    "trajectory: Agent execution trace logging",
+    "feedback: User feedback, scoring, relearning trigger",
+    "conflict: Sync conflict listing, resolution",
+    "batch: Batch operations (multi-file reads/writes)",
+    "async_ops: Async file operations (non-blocking I/O)",
+    "graph: Knowledge graph — entity, neighbors, subgraph queries",
+    "stream: File streaming, event streaming (SSE)",
+    "credential: Agent credentials — issue, verify, delegate",
+    "storage: Backend drivers, CAS, caching wrappers",
+    "brick: Dynamic brick management",
+    "observability: Health checks, metrics, probes",
+]
+
+# Default timeout per test (seconds). Override per-marker in conftest.
+timeout = 120
+
+[tool.coverage.run]
+source = ["tests"]
+omit = ["tests/helpers/*", "scripts/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]
