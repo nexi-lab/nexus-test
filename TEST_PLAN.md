@@ -5,26 +5,105 @@ system through the `nexus` CLI and HTTP API only — no internal Python imports.
 
 ---
 
-## 1. Configuration
+## 1. Infrastructure
+
+### Docker Compose (federation topology)
+
+Source: `nexus/dockerfiles/docker-compose.cross-platform-test.yml`
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Application Layer                                                       │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐        │
+│  │  Frontend   │  │  MCP Server│  │  LangGraph │  │  Zoekt     │        │
+│  │  :5173      │  │  :8081     │  │  :2024     │  │  :6070     │        │
+│  └──────┬──────┘  └──────┬─────┘  └──────┬─────┘  └────────────┘        │
+│         └────────────────┼───────────────┘                               │
+│                          ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐ │
+│  │  Kernel: 3-Node Raft Cluster (2 full + 1 witness)                  │ │
+│  │                                                                     │ │
+│  │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐           │ │
+│  │  │  nexus-1     │   │  nexus-2     │   │  witness     │           │ │
+│  │  │  (Leader)    │◄─►│  (Follower)  │◄─►│  (Vote-only) │           │ │
+│  │  │  HTTP :2026  │   │  HTTP :2027  │   │  gRPC :2128  │           │ │
+│  │  │  Raft :2126  │   │  Raft :2127  │   │  (no HTTP)   │           │ │
+│  │  └──────┬───────┘   └──────┬───────┘   └──────────────┘           │ │
+│  │         ▼                  ▼                                       │ │
+│  │  ┌────────────────────────────┐  ┌────────────────────────┐       │ │
+│  │  │  PostgreSQL (RecordStore)  │  │  Dragonfly (CacheStore)│       │ │
+│  │  │  :5432                     │  │  :6379                 │       │ │
+│  │  └────────────────────────────┘  └────────────────────────┘       │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+**Services:**
+
+| Service | Image | Port | Role |
+|---------|-------|------|------|
+| `nexus-1` | nexus-fullnode | :2026 (HTTP), :2126 (Raft) | Full node, initial leader |
+| `nexus-2` | nexus-fullnode | :2027 (HTTP), :2127 (Raft) | Full node, follower |
+| `witness` | raft-witness | :2128 (Raft) | Vote-only, no HTTP |
+| `postgres` | postgres:16-alpine | :5432 | Shared RecordStore |
+| `dragonfly` | dragonflydb | :6379 | CacheStore (embedding, Tiger Cache, EventBus) |
+| `mcp-server` | nexus-fullnode | :8081 | MCP tool server |
+| `langgraph` | nexus-langgraph | :2024 | AI agent orchestration |
+| `frontend` | nexus-frontend | :5173 | React web UI |
+| `zoekt` | zoekt-webserver | :6070 | Code search (optional `--profile zoekt`) |
+| `test` | nexus-fullnode | — | E2E test runner |
+
+**Federation zones:** `corp`, `corp-eng`, `corp-sales`, `family`
+**Zone mounts:** `/corp=corp`, `/corp/engineering=corp-eng`, `/corp/sales=corp-sales`, `/family=family`, `/family/work=corp`
+
+### Start / Stop
 
 ```bash
-# local.config
-TEST_URL=http://localhost:2026          # Running nexus server
-TEST_ZONE=test-zone                     # Zone for non-destructive tests
-TEST_API_KEY=nxk_test_...              # API key for test zone
-SCRATCH_ZONE=scratch-zone              # Zone wiped between tests
-SCRATCH_API_KEY=nxk_scratch_...        # API key for scratch zone
-DATABASE_URL=postgresql://...           # For tests requiring RecordStore
+# Build + start full cluster
+docker compose -f dockerfiles/docker-compose.cross-platform-test.yml up -d
 
-# Federation (optional)
-FED_NODE_1=http://remote-1:2026
-FED_NODE_2=http://remote-2:2026
-FED_ZONE_1=zone-alpha
-FED_ZONE_2=zone-beta
+# With code search
+docker compose -f dockerfiles/docker-compose.cross-platform-test.yml --profile zoekt up -d
 
-# Test data (optional)
+# Teardown (remove volumes)
+docker compose -f dockerfiles/docker-compose.cross-platform-test.yml down -v
+```
+
+### Test Configuration
+
+```bash
+# local.config — point tests at the running cluster
+TEST_URL=http://localhost:2026              # nexus-1 (leader)
+TEST_URL_FOLLOWER=http://localhost:2027     # nexus-2 (follower)
+TEST_API_KEY=sk-test-federation-e2e-admin-key
+TEST_ZONE=corp                              # Primary test zone
+SCRATCH_ZONE=corp-eng                       # Zone wiped between tests
+DATABASE_URL=postgresql://postgres:nexus@localhost:5432/nexus
+DRAGONFLY_URL=redis://localhost:6379
+
+# Federation zones (pre-configured in compose)
+FED_ZONES=corp,corp-eng,corp-sales,family
+FED_NODE_1=http://localhost:2026            # nexus-1
+FED_NODE_2=http://localhost:2027            # nexus-2
+
+# Test data
 BENCHMARK_DIR=~/nexus/benchmarks
 PERF_DATA_DIR=/tmp/nexus_perf_data
+```
+
+### Partition Simulation
+
+```bash
+# Disconnect witness (cluster still works — 2/3 quorum)
+docker network disconnect nexus_nexus-network nexus-witness
+
+# Reconnect
+docker network connect nexus_nexus-network nexus-witness
+
+# Kill leader, verify failover
+docker stop nexus-node-1
+curl http://localhost:2027/health   # nexus-2 becomes leader
+docker start nexus-node-1
 ```
 
 ---
@@ -668,52 +747,75 @@ All federation tests require 2+ nodes.
 
 ## 5. Deployment Topologies
 
+### Available compose files
+
+| File | Topology | Use For |
+|------|----------|---------|
+| `docker-compose.cross-platform-test.yml` | 3-node Raft cluster (2 full + 1 witness) + PG + Dragonfly + MCP + LangGraph + Frontend | Federation, chaos, stress, full regression |
+| `docker-compose.demo.yml` | Standalone single node + PG + Dragonfly + MCP + LangGraph + Frontend | Kernel, services, brick tests |
+| `docker-compose.evaluation.yml` | Standalone + pgvector + semantic search | Search accuracy, HERB Q&A |
+
+### Topologies exercised
+
 ```
-Topology 1: Standalone               Topology 2: Full Single-Node
-┌──────────────────┐                ┌──────────────────────────────┐
-│ nexus (kernel)   │                │ nexus (kernel + services)    │
-│ redb + local disk│                │ + PostgreSQL + all bricks    │
-└──────────────────┘                └──────────────────────────────┘
+Topology 1: Standalone (demo.yml)
+┌──────────────────────────────┐
+│ nexus (kernel + all bricks)  │
+│ + PostgreSQL + Dragonfly     │
+└──────────────────────────────┘
+Used by: quick, auto, cli, contract, security, slo groups
 
-Topology 3: 2-Node Federation       Topology 4: 3-Node Federation
-┌──────────┐   ┌──────────┐        ┌──────┐  ┌──────┐  ┌──────┐
-│ Zone A   │←→ │ Zone B   │        │ A    │←→│ B    │←→│ C    │
-│ full     │   │ full     │        │      │←→│      │←→│      │
-└──────────┘   └──────────┘        └──────┘  └──────┘  └──────┘
+Topology 2: 3-Node Raft Federation (cross-platform-test.yml)
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│  nexus-1     │   │  nexus-2     │   │  witness     │
+│  (Leader)    │◄─►│  (Follower)  │◄─►│  (Vote-only) │
+│  HTTP :2026  │   │  HTTP :2027  │   │  gRPC :2128  │
+│  Raft :2126  │   │  Raft :2127  │   │  (no HTTP)   │
+└──────┬───────┘   └──────┬───────┘   └──────────────┘
+       ▼                  ▼
+┌────────────────────────────┐  ┌────────────────────────┐
+│  PostgreSQL (shared)       │  │  Dragonfly (shared)    │
+│  :5432                     │  │  :6379                 │
+└────────────────────────────┘  └────────────────────────┘
+Zones: corp, corp-eng, corp-sales, family
+Mounts: /corp=corp, /corp/engineering=corp-eng, /corp/sales=corp-sales,
+        /family=family, /family/work=corp
+Used by: federation, chaos, portability, stress groups
 
-Topology 5: Edge + Hub              Topology 6: Cross-Region
-┌──────────┐                        ┌──────────┐    WAN    ┌──────────┐
-│ Edge     │←→ ┌──────────┐        │ US-West  │ ←──────→ │ EU-West  │
-│ (kernel) │   │ Hub      │        │ (full)   │           │ (full)   │
-└──────────┘   │ (full)   │        └──────────┘           └──────────┘
-               └──────────┘
+Topology 3: Evaluation (evaluation.yml)
+┌──────────────────────────────┐
+│ nexus (semantic search mode) │
+│ + pgvector + OpenAI embed    │
+└──────────────────────────────┘
+Used by: search/005 (HERB Q&A), search/002 (semantic), search/006 (expansion)
 ```
 
 ---
 
 ## 6. How to Run
 
-### Individual operations (what each test does internally)
+### Step 1: Start infrastructure
 
 ```bash
-nexus write /test/hello.txt "Hello World" --url $TEST_URL --api-key $TEST_API_KEY
-nexus cat /test/hello.txt --url $TEST_URL --api-key $TEST_API_KEY
-nexus rm /test/hello.txt --url $TEST_URL --api-key $TEST_API_KEY
+# Standalone (kernel + services + bricks, no federation)
+docker compose -f dockerfiles/docker-compose.demo.yml up -d
 
-# Or via HTTP
-curl -X POST $TEST_URL/api/nfs/write \
-  -H "Authorization: Bearer $TEST_API_KEY" \
-  -d '{"path": "/test/hello.txt", "content": "Hello World"}'
+# Federation cluster (2 full nodes + 1 witness + all services)
+docker compose -f dockerfiles/docker-compose.cross-platform-test.yml up -d
+
+# Verify cluster health
+curl http://localhost:2026/health   # nexus-1
+curl http://localhost:2027/health   # nexus-2 (federation only)
 ```
 
-### Test orchestrator
+### Step 2: Run tests
 
 ```bash
 # By run-type group
 nexus-test -g quick                   # < 2 min smoke
 nexus-test -g auto                    # ~15 min full regression
 nexus-test -g stress                  # ~30 min
-nexus-test -g federation              # Needs 2+ nodes
+nexus-test -g federation              # Needs federation cluster
 nexus-test -g perf                    # Benchmarks
 
 # By feature group
@@ -732,27 +834,53 @@ nexus-test "fed/0*"
 
 # With benchmark data
 nexus-test -g perf --benchmark-dir ~/nexus/benchmarks
-
-# Infrastructure management
-nexus-test deploy --mode kernel --nodes 2
-nexus-test federate --zones local,remote-1
-nexus-test teardown --all
 ```
 
-### Deployment & federation (real `nexus` commands)
+### Step 3: Run inside Docker (same network as cluster)
 
 ```bash
-nexus serve --host 0.0.0.0 --port 2026 --mode kernel-only
-nexus serve --host 0.0.0.0 --port 2026 --database-url postgresql://... --bricks all
-nexus deploy --host remote-1.example.com --mode full
-nexus federate --join http://hub-node:2026
-nexus federate --status
-nexus brick add memory
-nexus brick remove search
-nexus brick list
-nexus brick health
-nexus export --zone production --output ./backup.nexus
-nexus import --bundle ./backup.nexus --target staging --conflict skip
+# Use the built-in test service (runs pytest inside the Docker network)
+docker compose -f dockerfiles/docker-compose.cross-platform-test.yml up test
+docker compose -f dockerfiles/docker-compose.cross-platform-test.yml logs -f test
+```
+
+### Individual operations (what each test does internally)
+
+```bash
+# Via nexus CLI
+nexus write /test/hello.txt "Hello World" --url http://localhost:2026 --api-key $TEST_API_KEY
+nexus cat /test/hello.txt --url http://localhost:2026 --api-key $TEST_API_KEY
+nexus rm /test/hello.txt --url http://localhost:2026 --api-key $TEST_API_KEY
+
+# Via HTTP (JSON-RPC)
+curl -X POST http://localhost:2026/api/nfs/write \
+  -H "Authorization: Bearer $TEST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"write","params":{"path":"/test.txt","content":"hello"},"id":1}'
+
+# Write on leader, read from follower (consistency check)
+curl -X POST http://localhost:2026/api/nfs/write \
+  -H "Authorization: Bearer $TEST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"write","params":{"path":"/test.txt","content":"hello"},"id":1}'
+curl -X POST http://localhost:2027/api/nfs/read \
+  -H "Authorization: Bearer $TEST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"read","params":{"path":"/test.txt"},"id":1}'
+```
+
+### Chaos simulation
+
+```bash
+# Kill leader → verify failover
+docker stop nexus-node-1
+curl http://localhost:2027/health        # nexus-2 becomes leader
+docker start nexus-node-1
+
+# Network partition → verify quorum
+docker network disconnect nexus_nexus-network nexus-witness
+# Cluster still works (2/3 quorum with nexus-1 + nexus-2)
+docker network connect nexus_nexus-network nexus-witness
 ```
 
 ---
@@ -762,30 +890,31 @@ nexus import --bundle ./backup.nexus --target staging --conflict skip
 ### Phase 1: Kernel Correctness (Week 1-2)
 - Tests: `kernel/*`, `zone/*`, `hooks/*`, `auth/*`, `cli/001-002,018`, `obs/001`, `contract/001-002,005`
 - Data: `benchmarks/performance/`
-- Infra: Single `nexus serve --mode kernel-only`
+- Infra: `docker compose -f dockerfiles/docker-compose.demo.yml up -d`
 - Count: ~55 tests
 
 ### Phase 2: Services + Core Bricks (Week 3-4)
 - Tests: `namespace/*`, `agent/*`, `scheduler/*`, `eventlog/*`, `sync/*`, `mount/*`, `upload/*`, `rebac/*`, `memory/*`, `search/*`, `pay/*`
 - Data: `benchmarks/herb/enterprise-context/`
-- Infra: Single node + PostgreSQL
+- Infra: `docker compose -f dockerfiles/docker-compose.demo.yml up -d` (includes PostgreSQL + Dragonfly)
 - Count: ~90 tests
 
 ### Phase 3: All Bricks + Dynamic Management (Week 5-6)
 - Tests: `llm/*`, `mcp/*`, `sandbox/*`, `snapshot/*`, `skills/*`, `governance/*`, `reputation/*`, `delegation/*`, `workflow/*`, `ipc/*`, `watch/*`, `cache/*`, `versioning/*`, `locks/*`, `audit/*`, `a2a/*`, `discovery/*`, `manifest/*`, `playbook/*`, `trajectory/*`, `feedback/*`, `graph/*`, `batch/*`, `async/*`, `stream/*`, `conflict/*`, `credential/*`, `brick/*`, `storage/*`, `obs/*`, `cli/003-020`, `contract/003-006`
 - Data: `benchmarks/herb/qa/`
-- Infra: Full stack single node
+- Infra: `docker compose -f dockerfiles/docker-compose.demo.yml up -d` (full stack single node)
 - Count: ~120 tests
 
 ### Phase 4: Federation + Portability (Week 7-8)
 - Tests: `fed/*`, `port/*`, `chaos/*`
-- Infra: 2-3 node federation (Docker Compose or remote SSH)
+- Infra: `docker compose -f dockerfiles/docker-compose.cross-platform-test.yml up -d` (3-node Raft cluster)
+- Zones: `corp`, `corp-eng`, `corp-sales`, `family`
 - Count: ~45 tests
 
 ### Phase 5: Production Readiness (Week 9-10)
 - Tests: `stress/*`, `slo/*`, `security/*`, `property/*`, `upgrade/*`
 - Data: Full `benchmarks/performance/` dataset (50K files)
-- Infra: Multi-topology testing
+- Infra: Both `demo.yml` (standalone) and `cross-platform-test.yml` (federation)
 - Count: ~45 tests
 
 ### Grand Total: ~355 tests
@@ -798,45 +927,52 @@ nexus import --bundle ./backup.nexus --target staging --conflict skip
 # .github/workflows/nexus-test.yml
 jobs:
   quick:
-    # Every PR
+    # Every PR — standalone smoke test
     runs-on: ubuntu-latest
     steps:
-      - nexus serve --mode kernel-only &
+      - docker compose -f dockerfiles/docker-compose.demo.yml up -d
       - nexus-test -g quick
 
   auto:
-    # Nightly
+    # Nightly — full regression (standalone)
     runs-on: ubuntu-latest
-    services:
-      postgres: ...
     steps:
-      - nexus serve --mode full --database-url $PG_URL &
+      - docker compose -f dockerfiles/docker-compose.demo.yml up -d
       - nexus-test -g auto
 
   security:
     # Every PR + nightly
     runs-on: ubuntu-latest
     steps:
-      - nexus serve --mode full --database-url $PG_URL &
+      - docker compose -f dockerfiles/docker-compose.demo.yml up -d
       - nexus-test -g security
 
   federation:
-    # Weekly or on federation PRs
+    # Weekly or on federation PRs — 3-node Raft cluster
     runs-on: ubuntu-latest
     steps:
-      - docker compose -f federation-3node.yml up -d
+      - docker compose -f dockerfiles/docker-compose.cross-platform-test.yml up -d
       - nexus-test -g federation
+
+  chaos:
+    # Before release — fault injection against federation cluster
+    runs-on: ubuntu-latest
+    steps:
+      - docker compose -f dockerfiles/docker-compose.cross-platform-test.yml up -d
+      - nexus-test -g chaos
 
   perf:
     # On perf PRs, compare against baseline
     runs-on: ubuntu-latest
     steps:
+      - docker compose -f dockerfiles/docker-compose.demo.yml up -d
       - nexus-test -g perf --baseline ./perf-baseline.json
 
   release:
-    # Before release
+    # Before release — full matrix
     runs-on: ubuntu-latest
     steps:
+      - docker compose -f dockerfiles/docker-compose.cross-platform-test.yml up -d
       - nexus-test -g stress,chaos,slo,property,upgrade,portability
 ```
 
