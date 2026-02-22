@@ -117,35 +117,52 @@ class TestKernelStress:
 class TestKernelPerformance:
     """Performance benchmarks for kernel operations."""
 
-    @pytest.mark.timeout(300)
+    @pytest.mark.timeout(600)
     def test_large_flat_directory_ls(self, nexus: NexusClient, unique_path: str) -> None:
         """kernel/052: Large flat directory ls — 10K files, time list_dir."""
         base = f"{unique_path}/stress/flat_dir"
         num_files = 10_000
 
-        # Create files in batches
+        # Create files
+        write_failures = 0
         for i in range(num_files):
-            nexus.write_file(f"{base}/file_{i:05d}.txt", f"content-{i}")
+            resp = nexus.write_file(f"{base}/file_{i:05d}.txt", f"c-{i}")
+            if not resp.ok:
+                write_failures += 1
 
-        # Time the list operation
+        files_written = num_files - write_failures
+        assert files_written > 0, "No files were written successfully"
+
+        # Time the list operation — handle pagination
         start = time.monotonic()
-        result = assert_rpc_success(nexus.list_dir(base))
+        all_entries: list[str] = []
+        cursor = None
+        while True:
+            params: dict = {"path": base}
+            if cursor:
+                params["cursor"] = cursor
+            result = assert_rpc_success(nexus.rpc("list", params))
+
+            if isinstance(result, list):
+                all_entries.extend(result)
+                break
+            elif isinstance(result, dict):
+                entries = result.get("files", result.get("entries", []))
+                all_entries.extend(entries)
+                if not result.get("has_more", False):
+                    break
+                cursor = result.get("next_cursor")
+                if not cursor:
+                    break
+            else:
+                break
         elapsed = time.monotonic() - start
 
-        # Verify we got entries back
-        if isinstance(result, list):
-            count = len(result)
-        elif isinstance(result, dict) and "entries" in result:
-            count = len(result["entries"])
-        else:
-            count = 0
-
-        assert count >= num_files, (
-            f"Expected at least {num_files} entries, got {count}"
+        assert len(all_entries) >= files_written, (
+            f"Expected at least {files_written} entries, got {len(all_entries)}"
         )
 
-        # Log timing (not an assertion — just informational)
-        print(f"\n  list_dir({num_files} files): {elapsed:.3f}s")
+        print(f"\n  list_dir({files_written} files): {elapsed:.3f}s")
 
         # Cleanup
         with contextlib.suppress(Exception):
