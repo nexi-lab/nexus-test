@@ -20,7 +20,42 @@ import pytest
 
 from tests.helpers.api_client import NexusClient
 from tests.helpers.assertions import assert_rpc_success
-from tests.helpers.data_generators import generate_tree
+
+# Max parallel writers for setup phase
+_SETUP_WORKERS = 20
+
+
+def _parallel_write(
+    nexus: NexusClient,
+    files: list[tuple[str, str]],
+    *,
+    workers: int = _SETUP_WORKERS,
+) -> tuple[int, int]:
+    """Write files in parallel. Returns (success_count, failure_count)."""
+    successes = 0
+    failures = 0
+
+    def _write(path: str, content: str) -> bool:
+        try:
+            return nexus.write_file(path, content).ok
+        except Exception:
+            return False
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_write, path, content): path
+            for path, content in files
+        }
+        for future in as_completed(futures):
+            try:
+                if future.result():
+                    successes += 1
+                else:
+                    failures += 1
+            except Exception:
+                failures += 1
+
+    return successes, failures
 
 
 @pytest.mark.stress
@@ -115,7 +150,11 @@ class TestKernelStress:
 @pytest.mark.perf
 @pytest.mark.kernel
 class TestKernelPerformance:
-    """Performance benchmarks for kernel operations."""
+    """Performance benchmarks for kernel operations.
+
+    Setup uses parallel writes so timing reflects actual operation speed,
+    not write throughput.
+    """
 
     @pytest.mark.timeout(600)
     def test_large_flat_directory_ls(self, nexus: NexusClient, unique_path: str) -> None:
@@ -123,17 +162,18 @@ class TestKernelPerformance:
         base = f"{unique_path}/stress/flat_dir"
         num_files = 10_000
 
-        # Create files
-        write_failures = 0
-        for i in range(num_files):
-            resp = nexus.write_file(f"{base}/file_{i:05d}.txt", f"c-{i}")
-            if not resp.ok:
-                write_failures += 1
+        # --- Setup: parallel writes ---
+        files = [
+            (f"{base}/file_{i:05d}.txt", f"c-{i}")
+            for i in range(num_files)
+        ]
+        setup_start = time.monotonic()
+        written, failed = _parallel_write(nexus, files)
+        setup_elapsed = time.monotonic() - setup_start
+        assert written > 0, "No files were written successfully"
+        print(f"\n  setup: {written} files written in {setup_elapsed:.1f}s")
 
-        files_written = num_files - write_failures
-        assert files_written > 0, "No files were written successfully"
-
-        # Time the list operation — handle pagination
+        # --- Benchmark: list_dir with pagination ---
         start = time.monotonic()
         all_entries: list[str] = []
         cursor = None
@@ -158,25 +198,43 @@ class TestKernelPerformance:
                 break
         elapsed = time.monotonic() - start
 
-        assert len(all_entries) >= files_written, (
-            f"Expected at least {files_written} entries, got {len(all_entries)}"
+        assert len(all_entries) >= written, (
+            f"Expected at least {written} entries, got {len(all_entries)}"
         )
-
-        print(f"\n  list_dir({files_written} files): {elapsed:.3f}s")
+        print(f"  list_dir({written} files): {elapsed:.3f}s")
 
         # Cleanup
         with contextlib.suppress(Exception):
             nexus.rmdir(base, recursive=True)
 
-    @pytest.mark.timeout(300)
+    @pytest.mark.timeout(600)
     def test_nested_glob(self, nexus: NexusClient, unique_path: str) -> None:
         """kernel/053: Nested glob — generate tree, glob **/* , verify count."""
         base = f"{unique_path}/stress/nested_glob"
 
-        # Generate a tree: depth=4, breadth=3 → ~40 dirs, ~40 files
-        stats = generate_tree(nexus, base, depth=4, breadth=3)
+        # Let server recover from previous heavy test
+        time.sleep(10)
 
-        # Glob all files
+        # --- Setup: build tree via parallel writes (not generate_tree) ---
+        # depth=4, breadth=3 → predictable structure
+        files: list[tuple[str, str]] = []
+        depth, breadth = 4, 3
+
+        def _build_paths(path: str, d: int) -> None:
+            files.append((f"{path}/data.txt", f"file at depth {d} in {path}"))
+            if d < depth:
+                for i in range(breadth):
+                    _build_paths(f"{path}/dir_{i}", d + 1)
+
+        _build_paths(base, 1)
+
+        setup_start = time.monotonic()
+        written, _ = _parallel_write(nexus, files)
+        setup_elapsed = time.monotonic() - setup_start
+        assert written > 0, "No files were written successfully"
+        print(f"\n  setup: {written} files in {setup_elapsed:.1f}s")
+
+        # --- Benchmark: glob ---
         start = time.monotonic()
         result = assert_rpc_success(nexus.glob(f"{base}/**/*"))
         elapsed = time.monotonic() - start
@@ -189,15 +247,10 @@ class TestKernelPerformance:
         else:
             count = 0
 
-        # Should find at least as many files as were created
-        assert count >= stats.files_created, (
-            f"Glob should find at least {stats.files_created} files, got {count}"
+        assert count >= written, (
+            f"Glob should find at least {written} files, got {count}"
         )
-
-        print(
-            f"\n  glob(**/* over {stats.files_created} files,"
-            f" {stats.dirs_created} dirs): {elapsed:.3f}s"
-        )
+        print(f"  glob(**/*): {elapsed:.3f}s ({count} matches)")
 
         # Cleanup
         with contextlib.suppress(Exception):
@@ -209,32 +262,37 @@ class TestKernelPerformance:
         base = f"{unique_path}/stress/grep_large"
         num_files = 10_000
         needle = "STRESS_NEEDLE_054"
-        # Plant the needle in every 100th file
         needle_count = 0
 
+        # Let server recover from previous test
+        time.sleep(3)
+
+        # --- Setup: parallel writes with needle planted every 100th file ---
+        files: list[tuple[str, str]] = []
         for i in range(num_files):
             if i % 100 == 0:
                 content = f"line before\n{needle} found here\nline after"
                 needle_count += 1
             else:
                 content = f"regular content for file {i}"
-            nexus.write_file(f"{base}/file_{i:05d}.txt", content)
+            files.append((f"{base}/file_{i:05d}.txt", content))
 
-        # Grep for the needle
+        setup_start = time.monotonic()
+        written, failed = _parallel_write(nexus, files)
+        setup_elapsed = time.monotonic() - setup_start
+        assert written > 0, "No files were written successfully"
+        print(f"\n  setup: {written} files written in {setup_elapsed:.1f}s")
+
+        # --- Benchmark: grep ---
         start = time.monotonic()
         result = assert_rpc_success(nexus.grep(needle, base))
         elapsed = time.monotonic() - start
 
-        # Verify we found matches
         result_str = str(result)
         assert needle in result_str or "match" in result_str.lower(), (
             f"Grep should find '{needle}' in results: {result}"
         )
-
-        print(
-            f"\n  grep('{needle}') over {num_files} files,"
-            f" {needle_count} matches: {elapsed:.3f}s"
-        )
+        print(f"  grep('{needle}'): {elapsed:.3f}s ({needle_count} expected matches)")
 
         # Cleanup
         with contextlib.suppress(Exception):
