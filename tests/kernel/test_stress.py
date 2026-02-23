@@ -216,9 +216,9 @@ class TestKernelPerformance:
         time.sleep(10)
 
         # --- Setup: build tree via parallel writes (not generate_tree) ---
-        # depth=4, breadth=3 → predictable structure
+        # depth=6, breadth=5 → ~3906 files in nested dirs
         files: list[tuple[str, str]] = []
-        depth, breadth = 4, 3
+        depth, breadth = 6, 5
 
         def _build_paths(path: str, d: int) -> None:
             files.append((f"{path}/data.txt", f"file at depth {d} in {path}"))
@@ -229,7 +229,7 @@ class TestKernelPerformance:
         _build_paths(base, 1)
 
         setup_start = time.monotonic()
-        written, _ = _parallel_write(nexus, files)
+        written, _ = _parallel_write(nexus, files, workers=50)
         setup_elapsed = time.monotonic() - setup_start
         assert written > 0, "No files were written successfully"
         print(f"\n  setup: {written} files in {setup_elapsed:.1f}s")
