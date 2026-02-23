@@ -19,7 +19,6 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
-
 # ---------------------------------------------------------------------------
 # Response models (immutable)
 # ---------------------------------------------------------------------------
@@ -190,27 +189,21 @@ class NexusClient:
             params["zone_id"] = zone
         return self.rpc("glob", params)
 
-    def grep(
-        self, pattern: str, path: str = "/", *, zone: str | None = None
-    ) -> RpcResponse:
+    def grep(self, pattern: str, path: str = "/", *, zone: str | None = None) -> RpcResponse:
         """Grep file contents via JSON-RPC."""
         params: dict[str, Any] = {"pattern": pattern, "path": path}
         if zone:
             params["zone_id"] = zone
         return self.rpc("grep", params)
 
-    def rename(
-        self, old_path: str, new_path: str, *, zone: str | None = None
-    ) -> RpcResponse:
+    def rename(self, old_path: str, new_path: str, *, zone: str | None = None) -> RpcResponse:
         """Rename/move a file via JSON-RPC."""
         params: dict[str, Any] = {"old_path": old_path, "new_path": new_path}
         if zone:
             params["zone_id"] = zone
         return self.rpc("rename", params)
 
-    def copy(
-        self, source: str, destination: str, *, zone: str | None = None
-    ) -> RpcResponse:
+    def copy(self, source: str, destination: str, *, zone: str | None = None) -> RpcResponse:
         """Copy a file via JSON-RPC."""
         params: dict[str, Any] = {"src_path": source, "dst_path": destination}
         if zone:
@@ -240,6 +233,98 @@ class NexusClient:
             params["zone_id"] = zone
         return self.rpc("rmdir", params)
 
+    # --- Admin RPC methods ---
+
+    def admin_create_key(
+        self,
+        name: str,
+        zone_id: str,
+        *,
+        user_id: str | None = None,
+        is_admin: bool = False,
+    ) -> RpcResponse:
+        """Create an API key via admin RPC."""
+        params: dict[str, Any] = {"name": name, "zone_id": zone_id}
+        if user_id is not None:
+            params["user_id"] = user_id
+        params["is_admin"] = is_admin
+        return self.rpc("admin_create_key", params)
+
+    def add_mount(
+        self,
+        mount_point: str,
+        backend_type: str,
+        backend_config: dict[str, Any] | None = None,
+        *,
+        priority: int = 0,
+        readonly: bool = False,
+    ) -> RpcResponse:
+        """Add a filesystem mount via JSON-RPC."""
+        params: dict[str, Any] = {
+            "mount_point": mount_point,
+            "backend_type": backend_type,
+            "backend_config": backend_config or {},
+            "priority": priority,
+            "readonly": readonly,
+        }
+        return self.rpc("add_mount", params)
+
+    def list_mounts(self) -> RpcResponse:
+        """List filesystem mounts via JSON-RPC."""
+        return self.rpc("list_mounts")
+
+    # --- Zone client factory ---
+
+    def for_zone(self, zone_api_key: str) -> NexusClient:
+        """Create a new NexusClient using a zone-specific API key.
+
+        The caller is responsible for closing the returned client's http session.
+        """
+        http = httpx.Client(
+            base_url=self.base_url,
+            headers={"Authorization": f"Bearer {zone_api_key}"},
+            timeout=self.http.timeout,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+        return NexusClient(http=http, base_url=self.base_url, api_key=zone_api_key)
+
+    # --- Observability & Auth convenience methods ---
+
+    def whoami(self) -> httpx.Response:
+        """GET /api/auth/whoami — current identity."""
+        return self.http.get("/api/auth/whoami")
+
+    def health(self) -> httpx.Response:
+        """GET /health — basic health status."""
+        return self.http.get("/health")
+
+    def health_detailed(self) -> httpx.Response:
+        """GET /health/detailed — per-component health status."""
+        return self.http.get("/health/detailed")
+
+    def features(self) -> httpx.Response:
+        """GET /api/v2/features — enabled server features."""
+        return self.http.get("/api/v2/features")
+
+    # --- Zone REST API layer ---
+
+    def create_zone(self, zone_id: str, *, name: str | None = None) -> httpx.Response:
+        """Create a zone via REST API."""
+        body = {"zone_id": zone_id, "name": name or f"Test Zone {zone_id}"}
+        return self.http.post("/api/zones", json=body)
+
+    def delete_zone(self, zone_id: str) -> httpx.Response:
+        """Delete (deprovision) a zone via REST API."""
+        return self.http.delete(f"/api/zones/{zone_id}")
+
+    def get_zone(self, zone_id: str) -> httpx.Response:
+        """Get zone details via REST API."""
+        return self.http.get(f"/api/zones/{zone_id}")
+
+    def list_zones(self) -> httpx.Response:
+        """List all zones via REST API."""
+        return self.http.get("/api/zones")
+
     # --- REST API layer ---
 
     def api_get(self, path: str, **kwargs: Any) -> httpx.Response:
@@ -257,6 +342,18 @@ class NexusClient:
     def api_delete(self, path: str, **kwargs: Any) -> httpx.Response:
         """DELETE request to a REST API endpoint."""
         return self.http.delete(path, **kwargs)
+
+    def api_patch(self, path: str, **kwargs: Any) -> httpx.Response:
+        """PATCH request to a REST API endpoint."""
+        return self.http.patch(path, **kwargs)
+
+    def api_head(self, path: str, **kwargs: Any) -> httpx.Response:
+        """HEAD request to a REST API endpoint."""
+        return self.http.head(path, **kwargs)
+
+    def api_options(self, path: str, **kwargs: Any) -> httpx.Response:
+        """OPTIONS request to a REST API endpoint."""
+        return self.http.request("OPTIONS", path, **kwargs)
 
     # --- CLI layer ---
 
