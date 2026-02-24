@@ -303,6 +303,23 @@ Test IDs follow `nxfs/{feature}/{NNN}` (e.g., `nxfs/kernel/001`).
 | rebac/006 | Permission on write enforcement | auto,rebac | 403 without permission |
 | rebac/007 | Namespace-scoped permissions | auto,rebac | Scoped correctly |
 | rebac/008 | Permission changelog audit | auto,rebac | All changes logged |
+| rebac/009 | Parent folder inheritance | auto,rebac | File inherits read from parent folder |
+| rebac/010 | Tiger Cache write-through + invalidation | auto,rebac | Cache populates on check, invalidates on revoke |
+| rebac/011 | Tiger Cache stats endpoint | auto,rebac | /api/v2/cache/stats returns tiger_cache metrics |
+| rebac/012 | Read enforcement | auto,rebac | 403 on read without permission |
+| rebac/013 | Delete enforcement | auto,rebac | 403 on delete without permission |
+| rebac/014 | Owner role (read + write + execute) | auto,rebac | direct_owner grants all permissions |
+| rebac/015 | Expand — find all subjects | auto,rebac | rebac_expand returns granted subjects |
+| rebac/016 | Explain — trace resolution path | auto,rebac | rebac_explain returns successful_path |
+| rebac/017 | Batch check | auto,rebac | rebac_check_batch returns multiple results |
+| rebac/018 | List objects by relation | auto,rebac | rebac_list_objects returns objects for subject |
+| rebac/019 | Wildcard public access | auto,rebac | ("*","*") grant gives all users access |
+| rebac/020 | Cross-zone sharing relations | auto,rebac | shared-viewer/editor/owner grant cross-zone |
+| rebac/021 | Permission escalation prevention | auto,rebac,security | Viewer cannot grant editor |
+| rebac/022 | Glob permission filtering | auto,rebac | Glob results filtered by ReBAC |
+| rebac/023 | Conditional permissions | auto,rebac | Tuple with conditions field enforced |
+| rebac/024 | Admin bypass | auto,rebac,security | Admin key bypasses ReBAC checks |
+| rebac/025 | Concurrent permission mutations | stress,rebac | No corruption under concurrent grants/revokes |
 
 ### 4.7 — Memory
 
