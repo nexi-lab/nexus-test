@@ -20,7 +20,7 @@ from tests.config import TestSettings
 from tests.helpers.api_client import NexusClient
 from tests.helpers.assertions import assert_permission_denied
 
-from .conftest import UnprivilegedContext, _allowed
+from .conftest import UnprivilegedContext, _allowed, _explain_allowed
 
 # ---------------------------------------------------------------------------
 # rebac/001: Grant permission (tuple created)
@@ -414,11 +414,10 @@ class TestWriteEnforcement:
         read_resp = nexus.read_file(path, zone=zone)
         assert not read_resp.ok, "File should not exist after denied write"
 
-        # 3. Grant write permission using zone-prefixed paths
-        #    The server enforces permissions on /zone/{zone_id}/... paths,
-        #    checking both the file and its parent directory.
-        zone_prefix = f"/zone/{zone}"
-        dir_path = f"{zone_prefix}/rebac006/{tag}"
+        # 3. Grant write permission using non-prefixed paths.
+        #    The enforcer unscopes zone-prefixed storage paths before ReBAC checks,
+        #    so grants should use non-prefixed paths (zone isolation via zone_id field).
+        dir_path = f"/rebac006/{tag}"
         file_path = f"{dir_path}/enforced.txt"
         for grant_path in (dir_path, file_path):
             grant_resp = create_tuple(("user", user_id), "direct_editor", ("file", grant_path))
@@ -775,3 +774,295 @@ class TestTigerCacheStats:
         assert isinstance(tc["hits"], int)
         assert isinstance(tc["misses"], int)
         assert tc["hits"] + tc["misses"] > 0, "Tiger Cache should have at least 1 hit or miss"
+
+
+# ---------------------------------------------------------------------------
+# rebac/012: Read enforcement (403 without permission)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.auto
+@pytest.mark.rebac
+class TestReadEnforcement:
+    """rebac/012: Read operations denied without ReBAC grant."""
+
+    def test_read_denied_then_granted(
+        self,
+        nexus: NexusClient,
+        unprivileged_client: UnprivilegedContext,
+        create_tuple: Any,
+        settings: TestSettings,
+    ) -> None:
+        """rebac/012: Unprivileged read → 403, then grant → success."""
+        tag = uuid.uuid4().hex[:8]
+        path = f"/rebac012/{tag}/secret.txt"
+        content = f"secret content {tag}"
+        zone = settings.zone
+        unpriv = unprivileged_client.client
+        user_id = unprivileged_client.user_id
+
+        # 1. Admin writes a file so it exists
+        write_resp = nexus.write_file(path, content, zone=zone)
+        assert write_resp.ok, f"Admin write failed: {write_resp.error}"
+
+        try:
+            # 2. Unprivileged user attempts read → denied
+            resp = unpriv.read_file(path)
+            assert_permission_denied(resp)
+
+            # 3. Grant read permission using non-prefixed paths
+            dir_path = f"/rebac012/{tag}"
+            file_path = f"{dir_path}/secret.txt"
+            for grant_path in (dir_path, file_path):
+                grant_resp = create_tuple(
+                    ("user", user_id), "direct_viewer", ("file", grant_path)
+                )
+                assert grant_resp.ok, f"Grant failed for {grant_path}: {grant_resp.error}"
+
+            # 4. Retry read → success (grant may need a moment to propagate)
+            resp2 = unpriv.read_file(path)
+            for _ in range(4):
+                if resp2.ok:
+                    break
+                time.sleep(0.5)
+                resp2 = unpriv.read_file(path)
+            assert resp2.ok, f"Read should succeed after grant: {resp2.error}"
+
+            # 5. Verify content matches what admin wrote
+            assert resp2.content_str == content
+        finally:
+            with contextlib.suppress(Exception):
+                nexus.delete_file(path, zone=zone)
+
+
+# ---------------------------------------------------------------------------
+# rebac/013: Delete enforcement (403 without permission)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.auto
+@pytest.mark.rebac
+class TestDeleteEnforcement:
+    """rebac/013: Delete operations denied without ReBAC grant."""
+
+    def test_delete_denied_then_granted(
+        self,
+        nexus: NexusClient,
+        unprivileged_client: UnprivilegedContext,
+        create_tuple: Any,
+        settings: TestSettings,
+    ) -> None:
+        """rebac/013: Unprivileged delete → 403, then grant → success."""
+        tag = uuid.uuid4().hex[:8]
+        path = f"/rebac013/{tag}/deleteme.txt"
+        content = f"delete me {tag}"
+        zone = settings.zone
+        unpriv = unprivileged_client.client
+        user_id = unprivileged_client.user_id
+
+        # 1. Admin writes a file so it exists
+        write_resp = nexus.write_file(path, content, zone=zone)
+        assert write_resp.ok, f"Admin write failed: {write_resp.error}"
+
+        try:
+            # 2. Unprivileged user attempts delete → denied
+            resp = unpriv.delete_file(path)
+            assert_permission_denied(resp)
+
+            # 3. Verify file still exists (no partial delete)
+            read_resp = nexus.read_file(path, zone=zone)
+            assert read_resp.ok, "File should still exist after denied delete"
+
+            # 4. Grant write permission (write implies delete) using non-prefixed paths
+            dir_path = f"/rebac013/{tag}"
+            file_path = f"{dir_path}/deleteme.txt"
+            for grant_path in (dir_path, file_path):
+                grant_resp = create_tuple(
+                    ("user", user_id), "direct_editor", ("file", grant_path)
+                )
+                assert grant_resp.ok, f"Grant failed for {grant_path}: {grant_resp.error}"
+
+            # 5. Retry delete → success (grant may need a moment to propagate)
+            resp2 = unpriv.delete_file(path)
+            for _ in range(4):
+                if resp2.ok:
+                    break
+                time.sleep(0.5)
+                resp2 = unpriv.delete_file(path)
+            assert resp2.ok, f"Delete should succeed after grant: {resp2.error}"
+
+            # 6. Verify file is gone
+            read_resp2 = nexus.read_file(path, zone=zone)
+            assert not read_resp2.ok, "File should not exist after successful delete"
+        finally:
+            # Cleanup if file still exists (e.g., delete was denied)
+            with contextlib.suppress(Exception):
+                nexus.delete_file(path, zone=zone)
+
+
+# ---------------------------------------------------------------------------
+# rebac/014: Owner role (implies read, write, execute)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.auto
+@pytest.mark.rebac
+class TestOwnerRole:
+    """rebac/014: Owner role implies read, write, and execute permissions."""
+
+    def test_owner_implies_read_write_execute(
+        self, nexus: NexusClient, create_tuple: Any, settings: TestSettings
+    ) -> None:
+        """rebac/014: Grant direct_owner → read, write, execute all true."""
+        tag = uuid.uuid4().hex[:8]
+        subject = ("user", f"rebac014_{tag}")
+        object_ = ("file", f"/rebac014/{tag}/owned.txt")
+        zone = settings.zone
+
+        # Grant direct_owner
+        resp = create_tuple(subject, "direct_owner", object_)
+        assert resp.ok, f"rebac_create failed: {resp.error}"
+        revision = resp.result["revision"]
+
+        # Owner → read: true
+        check_read = nexus.rebac_check(
+            subject,
+            "read",
+            object_,
+            zone_id=zone,
+            consistency_mode="at_least_as_fresh",
+            min_revision=revision,
+        )
+        assert _allowed(check_read), "Owner should have read permission"
+
+        # Owner → write: true
+        check_write = nexus.rebac_check(
+            subject,
+            "write",
+            object_,
+            zone_id=zone,
+            consistency_mode="at_least_as_fresh",
+            min_revision=revision,
+        )
+        assert _allowed(check_write), "Owner should have write permission"
+
+        # Owner → execute: true
+        check_exec = nexus.rebac_check(
+            subject,
+            "execute",
+            object_,
+            zone_id=zone,
+            consistency_mode="at_least_as_fresh",
+            min_revision=revision,
+        )
+        assert _allowed(check_exec), "Owner should have execute permission"
+
+
+# ---------------------------------------------------------------------------
+# rebac/015: Expand API (returns granted subjects)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.auto
+@pytest.mark.rebac
+class TestExpandPermission:
+    """rebac/015: Expand API returns all subjects with a given permission."""
+
+    def test_expand_returns_granted_subjects(
+        self, nexus: NexusClient, create_tuple: Any, settings: TestSettings
+    ) -> None:
+        """rebac/015: Grant viewer to alice and editor to bob → expand finds both."""
+        tag = uuid.uuid4().hex[:8]
+        alice = ("user", f"rebac015_alice_{tag}")
+        bob = ("user", f"rebac015_bob_{tag}")
+        object_ = ("file", f"/rebac015/{tag}/shared.txt")
+        zone = settings.zone
+
+        # Grant direct_viewer to alice and bob
+        r1 = create_tuple(alice, "direct_viewer", object_)
+        assert r1.ok, f"Grant alice failed: {r1.error}"
+
+        r2 = create_tuple(bob, "direct_viewer", object_)
+        assert r2.ok, f"Grant bob failed: {r2.error}"
+
+        # Expand "viewer" relation on the file (expand uses relations, not permissions)
+        expand_resp = nexus.rebac_expand("viewer", object_, zone_id=zone)
+        assert expand_resp.ok, f"rebac_expand failed: {expand_resp.error}"
+
+        result = expand_resp.result
+        assert isinstance(result, (dict, list)), (
+            f"Expand result should be dict or list, got {type(result)}"
+        )
+
+        # Extract subjects from the expand result
+        if isinstance(result, dict):
+            subjects = result.get("subjects", [])
+        else:
+            subjects = result
+
+        # Flatten subject identifiers for matching
+        subject_ids: set[str] = set()
+        for s in subjects:
+            if isinstance(s, dict):
+                sid = s.get("subject_id") or s.get("id") or ""
+                subject_ids.add(sid)
+            elif isinstance(s, list) and len(s) >= 2:
+                subject_ids.add(s[1])
+            elif isinstance(s, str):
+                subject_ids.add(s)
+
+        assert alice[1] in subject_ids, (
+            f"alice ({alice[1]}) should appear in expand subjects: {subject_ids}"
+        )
+        assert bob[1] in subject_ids, (
+            f"bob ({bob[1]}) should appear in expand subjects: {subject_ids}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# rebac/016: Explain API (returns resolution path)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.auto
+@pytest.mark.rebac
+class TestExplainPermission:
+    """rebac/016: Explain API returns the permission resolution path."""
+
+    def test_explain_returns_resolution_path(
+        self, nexus: NexusClient, create_tuple: Any, settings: TestSettings
+    ) -> None:
+        """rebac/016: Grant viewer → explain → successful_path present."""
+        tag = uuid.uuid4().hex[:8]
+        subject = ("user", f"rebac016_{tag}")
+        object_ = ("file", f"/rebac016/{tag}/explained.txt")
+        zone = settings.zone
+
+        # Grant direct_viewer
+        resp = create_tuple(subject, "direct_viewer", object_)
+        assert resp.ok, f"rebac_create failed: {resp.error}"
+
+        # Explain read permission for granted user
+        explain_resp = nexus.rebac_explain(
+            subject, "read", object_, zone_id=zone
+        )
+        assert explain_resp.ok, f"rebac_explain failed: {explain_resp.error}"
+        assert _explain_allowed(explain_resp), (
+            "Explain should find a successful_path for granted user"
+        )
+
+        # Verify result structure contains successful_path
+        result = explain_resp.result
+        assert isinstance(result, dict), "Explain result should be a dict"
+        assert "successful_path" in result, (
+            f"Explain result should contain 'successful_path', got keys: {list(result.keys())}"
+        )
+
+        # Explain for non-granted user → no successful_path
+        other = ("user", f"rebac016_other_{tag}")
+        explain_other = nexus.rebac_explain(
+            other, "read", object_, zone_id=zone
+        )
+        assert not _explain_allowed(explain_other), (
+            "Explain should NOT find a successful_path for non-granted user"
+        )

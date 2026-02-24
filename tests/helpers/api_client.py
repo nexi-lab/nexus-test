@@ -370,15 +370,45 @@ class NexusClient:
         self,
         permission: str,
         object_: tuple[str, str] | list[str],
+        *,
+        zone_id: str | None = None,
     ) -> RpcResponse:
         """Expand ReBAC permissions to find all subjects via JSON-RPC."""
-        return self.rpc(
-            "rebac_expand",
-            {
-                "permission": permission,
-                "object": list(object_),
-            },
-        )
+        params: dict[str, Any] = {
+            "permission": permission,
+            "object": list(object_),
+        }
+        if zone_id is not None:
+            params["zone_id"] = zone_id
+        return self.rpc("rebac_expand", params)
+
+    def rebac_check_batch(
+        self,
+        checks: list[dict[str, Any]],
+    ) -> RpcResponse:
+        """Batch check multiple ReBAC permissions via JSON-RPC.
+
+        Args:
+            checks: List of check requests, each with subject, permission, object,
+                    and optional zone_id/consistency_mode/min_revision.
+        """
+        return self.rpc("rebac_check_batch", {"checks": checks})
+
+    def rebac_list_objects(
+        self,
+        relation: str,
+        subject: tuple[str, str] | list[str],
+        *,
+        zone_id: str | None = None,
+    ) -> RpcResponse:
+        """List objects a subject has a given relation to via JSON-RPC."""
+        params: dict[str, Any] = {
+            "relation": relation,
+            "subject": list(subject),
+        }
+        if zone_id is not None:
+            params["zone_id"] = zone_id
+        return self.rpc("rebac_list_objects", params)
 
     # --- Zone client factory ---
 
