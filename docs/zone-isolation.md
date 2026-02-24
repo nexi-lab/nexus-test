@@ -67,15 +67,22 @@ from short-circuiting ReBAC checks:
 
 **Layer 3 -- Path-prefix strategy**
 
-Each zone is bound to a unique path prefix derived from its zone ID:
+Each zone client uses a simple path prefix. The server adds its own
+`/zone/{zone_id}/` prefix internally, so the client path doesn't need to
+encode the zone name:
 
-| Zone   | Path prefix                          | Default              |
-|--------|--------------------------------------|----------------------|
-| Zone A | `/test-zone-{settings.zone}`         | `/test-zone-corp`    |
-| Zone B | `/test-zone-{settings.scratch_zone}` | `/test-zone-corp-eng`|
+| Zone   | Client prefix | Server-side path               |
+|--------|---------------|---------------------------------|
+| Zone A | `/za`         | `/zone/corp/za/...`            |
+| Zone B | `/zb`         | `/zone/corp-eng/zb/...`        |
 
-A zone-scoped key has no ReBAC grant for another zone's prefix, so cross-zone
+A zone-scoped key has ReBAC grants only in its own zone, so cross-zone
 writes and reads are denied even if the underlying storage is shared.
+
+Shallow prefixes (depth <= 3) ensure the ReBAC enforcer uses the sequential
+permission checker, which reliably resolves root `/` grants. Deeper paths
+trigger the batched checker which may not resolve them correctly for
+non-default zones.
 
 ### Standalone Limitation
 
@@ -193,8 +200,8 @@ Session-scoped (created once)
   settings          TestSettings loaded from env
   http_client       httpx.Client with admin auth
   nexus             Admin NexusClient
-  zone_a_root       "/test-zone-{zone}"       path prefix
-  zone_b_root       "/test-zone-{scratch_zone}" path prefix
+  zone_a_root       "/za"                     path prefix
+  zone_b_root       "/zb"                     path prefix
   nexus_a           Zone A client (non-admin)
   nexus_b           Zone B client (non-admin)
 
@@ -218,16 +225,18 @@ Each zone client is created with three steps:
    `NexusClient` with its own `httpx.Client` session bound to the zone key
 
 ```python
-# Zone A
-raw_key = create_zone_key(nexus, settings.zone, name="test-zone-a-key",
-                          user_id="test-user-zone-a")
-grant_zone_permission(settings.zone, "test-user-zone-a", zone_a_root)
+# Zone A (unique user_id per fixture invocation)
+user_id = f"zone-a-user-{uuid.uuid4().hex[:6]}"
+raw_key = create_zone_key(nexus, settings.zone, name=f"test-a-{uuid.uuid4().hex[:8]}",
+                          user_id=user_id)
+grant_zone_permission(settings.zone, user_id, "/", "direct_owner")
 client_a = nexus.for_zone(raw_key)
 
 # Zone B
-raw_key = create_zone_key(nexus, settings.scratch_zone, name="test-zone-b-key",
-                          user_id="test-user-zone-b")
-grant_zone_permission(settings.scratch_zone, "test-user-zone-b", zone_b_root)
+user_id = f"zone-b-user-{uuid.uuid4().hex[:6]}"
+raw_key = create_zone_key(nexus, settings.scratch_zone, name=f"test-b-{uuid.uuid4().hex[:8]}",
+                          user_id=user_id)
+grant_zone_permission(settings.scratch_zone, user_id, "/", "direct_owner")
 client_b = nexus.for_zone(raw_key)
 ```
 
