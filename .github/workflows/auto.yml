@@ -35,10 +35,14 @@ jobs:
           path: nexus
           ref: develop
 
+      - name: Create .env for docker compose
+        working-directory: nexus
+        run: touch .env
+
       - name: Start cluster
         working-directory: nexus
         run: |
-          docker compose -f dockerfiles/docker-compose.demo.yml up -d --wait --wait-timeout 180
+          docker compose -f dockerfiles/docker-compose.demo.yml up -d --wait --wait-timeout 180 postgres dragonfly nexus
 
       - name: Run full regression
         run: |
@@ -92,10 +96,14 @@ jobs:
           path: nexus
           ref: develop
 
+      - name: Create .env for docker compose
+        working-directory: nexus
+        run: touch .env
+
       - name: Start cluster
         working-directory: nexus
         run: |
-          docker compose -f dockerfiles/docker-compose.demo.yml up -d --wait --wait-timeout 180
+          docker compose -f dockerfiles/docker-compose.demo.yml up -d --wait --wait-timeout 180 postgres dragonfly nexus
 
       - name: Run security tests
         run: uv run pytest -m security --timeout=120 --junitxml=results-security.xml

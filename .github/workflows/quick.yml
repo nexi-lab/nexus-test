@@ -30,12 +30,16 @@ jobs:
         with:
           repository: nexi-lab/nexus
           path: nexus
-          ref: develop
+          ref: fix/cas-result-match-exhaustive
+
+      - name: Create .env for docker compose
+        working-directory: nexus
+        run: touch .env
 
       - name: Start cluster
         working-directory: nexus
         run: |
-          docker compose -f dockerfiles/docker-compose.demo.yml up -d --wait --wait-timeout 180
+          docker compose -f dockerfiles/docker-compose.demo.yml up -d --wait --wait-timeout 180 postgres dragonfly nexus
 
       - name: Run smoke tests
         run: uv run pytest -m quick --tb=short --junitxml=results-smoke.xml
