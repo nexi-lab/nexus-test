@@ -30,7 +30,7 @@ jobs:
         with:
           repository: nexi-lab/nexus
           path: nexus
-          ref: develop
+          ref: fix/cas-result-match-exhaustive
 
       - name: Create .env for docker compose
         working-directory: nexus
