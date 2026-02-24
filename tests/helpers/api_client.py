@@ -269,6 +269,117 @@ class NexusClient:
         """List filesystem mounts via JSON-RPC."""
         return self.rpc("list_mounts")
 
+    # --- ReBAC RPC methods ---
+
+    def rebac_create(
+        self,
+        subject: tuple[str, str] | list[str],
+        relation: str,
+        object_: tuple[str, str] | list[str],
+        *,
+        zone_id: str | None = None,
+        expires_at: str | None = None,
+    ) -> RpcResponse:
+        """Create a ReBAC relationship tuple via JSON-RPC."""
+        params: dict[str, Any] = {
+            "subject": list(subject),
+            "relation": relation,
+            "object": list(object_),
+        }
+        if zone_id is not None:
+            params["zone_id"] = zone_id
+        if expires_at is not None:
+            params["expires_at"] = expires_at
+        return self.rpc("rebac_create", params)
+
+    def rebac_check(
+        self,
+        subject: tuple[str, str] | list[str],
+        permission: str,
+        object_: tuple[str, str] | list[str],
+        *,
+        zone_id: str | None = None,
+        consistency_mode: str | None = None,
+        min_revision: int | None = None,
+    ) -> RpcResponse:
+        """Check a ReBAC permission via JSON-RPC.
+
+        Args:
+            consistency_mode: "minimize_latency", "at_least_as_fresh", or "fully_consistent".
+            min_revision: Minimum acceptable revision (for at_least_as_fresh mode).
+        """
+        params: dict[str, Any] = {
+            "subject": list(subject),
+            "permission": permission,
+            "object": list(object_),
+        }
+        if zone_id is not None:
+            params["zone_id"] = zone_id
+        if consistency_mode is not None:
+            params["consistency_mode"] = consistency_mode
+        if min_revision is not None:
+            params["min_revision"] = min_revision
+        return self.rpc("rebac_check", params)
+
+    def rebac_delete(self, tuple_id: str) -> RpcResponse:
+        """Delete a ReBAC relationship tuple via JSON-RPC."""
+        return self.rpc("rebac_delete", {"tuple_id": tuple_id})
+
+    def rebac_list_tuples(
+        self,
+        *,
+        subject: tuple[str, str] | list[str] | None = None,
+        relation: str | None = None,
+        object_: tuple[str, str] | list[str] | None = None,
+    ) -> RpcResponse:
+        """List ReBAC relationship tuples via JSON-RPC."""
+        params: dict[str, Any] = {}
+        if subject is not None:
+            params["subject"] = list(subject)
+        if relation is not None:
+            params["relation"] = relation
+        if object_ is not None:
+            params["object"] = list(object_)
+        return self.rpc("rebac_list_tuples", params)
+
+    def rebac_explain(
+        self,
+        subject: tuple[str, str] | list[str],
+        permission: str,
+        object_: tuple[str, str] | list[str],
+        *,
+        zone_id: str | None = None,
+    ) -> RpcResponse:
+        """Explain a ReBAC permission check via JSON-RPC.
+
+        Returns detailed trace of the permission resolution graph.
+        Unlike rebac_check (which uses Rust acceleration), this uses
+        the Python engine which fully resolves tupleToUserset patterns
+        including group inheritance.
+        """
+        params: dict[str, Any] = {
+            "subject": list(subject),
+            "permission": permission,
+            "object": list(object_),
+        }
+        if zone_id is not None:
+            params["zone_id"] = zone_id
+        return self.rpc("rebac_explain", params)
+
+    def rebac_expand(
+        self,
+        permission: str,
+        object_: tuple[str, str] | list[str],
+    ) -> RpcResponse:
+        """Expand ReBAC permissions to find all subjects via JSON-RPC."""
+        return self.rpc(
+            "rebac_expand",
+            {
+                "permission": permission,
+                "object": list(object_),
+            },
+        )
+
     # --- Zone client factory ---
 
     def for_zone(self, zone_api_key: str) -> NexusClient:

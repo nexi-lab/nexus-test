@@ -8,6 +8,7 @@ All helpers raise AssertionError with descriptive messages on failure.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from typing import Any
 
@@ -81,8 +82,7 @@ def assert_file_roundtrip(
     read_resp = nexus.read_file(path, zone=zone)
     assert read_resp.ok, f"File roundtrip read failed for {path}: {read_resp.error}"
     assert read_resp.content_str == content, (
-        f"File roundtrip failed for {path}: "
-        f"wrote {content!r}, read {read_resp.content_str!r}"
+        f"File roundtrip failed for {path}: wrote {content!r}, read {read_resp.content_str!r}"
     )
     return write_result
 
@@ -108,7 +108,9 @@ def assert_directory_contains(
     """Assert that a directory listing contains the expected entry names."""
     result = assert_rpc_success(nexus.list_dir(path, zone=zone))
     if isinstance(result, list):
-        actual_names = {entry.get("name", entry) if isinstance(entry, dict) else entry for entry in result}
+        actual_names = {
+            entry.get("name", entry) if isinstance(entry, dict) else entry for entry in result
+        }
     elif isinstance(result, dict) and "entries" in result:
         actual_names = {
             entry.get("name", entry) if isinstance(entry, dict) else entry
@@ -118,10 +120,7 @@ def assert_directory_contains(
         actual_names = set()
 
     missing = expected_names - actual_names
-    assert not missing, (
-        f"Directory {path} missing entries: {missing}. "
-        f"Found: {actual_names}"
-    )
+    assert not missing, f"Directory {path} missing entries: {missing}. Found: {actual_names}"
 
 
 def assert_cli_success(result: CliResult) -> str:
@@ -142,6 +141,31 @@ def assert_cli_error(result: CliResult, *, stderr_contains: str | None = None) -
             f"Expected stderr to contain {stderr_contains!r}, got: {result.stderr!r}"
         )
     return result
+
+
+def assert_permission_denied(response: RpcResponse) -> RpcResponse:
+    """Assert that an RPC response indicates a permission denial.
+
+    Checks for HTTP 403, or error messages containing "forbidden", "denied",
+    or "permission". Tolerant of different server response formats.
+
+    Returns:
+        The response (for further inspection).
+    """
+    assert not response.ok, f"Expected permission denied but got success: result={response.result}"
+    error_code = response.error.code
+    error_msg = response.error.message.lower()
+    is_permission_error = (
+        abs(error_code) == 403
+        or "forbidden" in error_msg
+        or "denied" in error_msg
+        or "permission" in error_msg
+    )
+    assert is_permission_error, (
+        f"Expected permission denied error, got: "
+        f"code={error_code}, message={response.error.message!r}"
+    )
+    return response
 
 
 def assert_health_ok(nexus: NexusClient) -> dict[str, Any]:
@@ -166,9 +190,7 @@ def assert_http_ok(resp: httpx.Response) -> dict[str, Any]:
     Raises:
         AssertionError: If the status is not 200.
     """
-    assert resp.status_code == 200, (
-        f"Expected HTTP 200, got {resp.status_code}: {resp.text[:500]}"
-    )
+    assert resp.status_code == 200, f"Expected HTTP 200, got {resp.status_code}: {resp.text[:500]}"
     return resp.json()
 
 
@@ -200,9 +222,7 @@ def extract_paths(result: Any) -> list[str]:
     return []
 
 
-def parse_prometheus_metric(
-    text: str, metric_name: str
-) -> dict[str, Any] | None:
+def parse_prometheus_metric(text: str, metric_name: str) -> dict[str, Any] | None:
     """Parse a single metric from Prometheus text exposition format.
 
     Args:
@@ -218,9 +238,7 @@ def parse_prometheus_metric(
     metric_value: float | None = None
 
     # Find TYPE declaration
-    type_pattern = re.compile(
-        rf"^#\s+TYPE\s+{re.escape(metric_name)}\s+(\w+)", re.MULTILINE
-    )
+    type_pattern = re.compile(rf"^#\s+TYPE\s+{re.escape(metric_name)}\s+(\w+)", re.MULTILINE)
     type_match = type_pattern.search(text)
     if type_match:
         metric_type = type_match.group(1).lower()
@@ -234,10 +252,8 @@ def parse_prometheus_metric(
     )
     value_match = value_pattern.search(text)
     if value_match:
-        try:
+        with contextlib.suppress(ValueError):
             metric_value = float(value_match.group(1))
-        except ValueError:
-            pass
 
     if metric_type is None and metric_value is None:
         return None
