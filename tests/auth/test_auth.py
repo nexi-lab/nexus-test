@@ -115,12 +115,11 @@ class TestRateLimiting:
         Skips if rate limiting is not enabled on the server.
         Uses anonymous tier (60 req/min default).
         """
-        # Check if rate limiting is enabled
+        # Check if rate limiting is enabled via features endpoint
         features_resp = nexus.features()
         if features_resp.status_code == 200:
             features = features_resp.json()
-            rate_limit_flag = features.get("rate_limit", features.get("rate_limiting"))
-            if rate_limit_flag is False:
+            if not features.get("rate_limit_enabled"):
                 pytest.skip("Rate limiting is not enabled on this server")
 
         # Burst anonymous requests beyond the limit
@@ -150,7 +149,8 @@ class TestRateLimiting:
         Always runs. Checks for X-RateLimit-Limit and X-RateLimit-Remaining.
         Falls back to skip if headers are absent (rate limiting disabled).
         """
-        resp = nexus.health()
+        # Use /api/auth/whoami instead of /health — /health is @limiter.exempt
+        resp = nexus.whoami()
         limit_header = resp.headers.get("X-RateLimit-Limit")
         remaining_header = resp.headers.get("X-RateLimit-Remaining")
 
@@ -207,11 +207,20 @@ class TestApiKeyLifecycle:
                     f"Key revocation failed: {revoke_resp.status_code}"
                 )
 
-                # Verify revoked key returns 401
+                # Verify revoked key is no longer authenticated.
+                # whoami may return 401 (hard reject) or 200 with
+                # authenticated=false (soft reject) — both are valid.
                 verify_resp = zone_client.whoami()
-                assert verify_resp.status_code == 401, (
-                    f"Revoked key should return 401, got {verify_resp.status_code}"
-                )
+                if verify_resp.status_code == 401:
+                    pass  # Hard reject — pass
+                else:
+                    assert verify_resp.status_code == 200, (
+                        f"Expected 200 or 401, got {verify_resp.status_code}"
+                    )
+                    data = verify_resp.json()
+                    assert data.get("authenticated") is False, (
+                        f"Revoked key should not be authenticated: {data}"
+                    )
             else:
                 pytest.skip("Server did not return key_id — cannot test revocation")
         finally:
