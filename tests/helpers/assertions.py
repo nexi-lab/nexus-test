@@ -8,7 +8,10 @@ All helpers raise AssertionError with descriptive messages on failure.
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+import httpx
 
 from tests.helpers.api_client import CliResult, NexusClient, RpcResponse
 
@@ -149,3 +152,97 @@ def assert_health_ok(nexus: NexusClient) -> dict[str, Any]:
     status = data.get("status", "").lower()
     assert status in {"healthy", "ok"}, f"Unhealthy status: {data}"
     return data
+
+
+def assert_http_ok(resp: httpx.Response) -> dict[str, Any]:
+    """Assert that an HTTP response is 200 and return the JSON body.
+
+    Args:
+        resp: The httpx response to check.
+
+    Returns:
+        Parsed JSON body as a dict.
+
+    Raises:
+        AssertionError: If the status is not 200.
+    """
+    assert resp.status_code == 200, (
+        f"Expected HTTP 200, got {resp.status_code}: {resp.text[:500]}"
+    )
+    return resp.json()
+
+
+def extract_paths(result: Any) -> list[str]:
+    """Extract file paths from an RPC result.
+
+    Handles various result formats:
+    - list of strings
+    - list of dicts with "path" keys
+    - dict with "matches" or "entries" list
+
+    Returns:
+        List of path strings.
+    """
+    if result is None:
+        return []
+    if isinstance(result, list):
+        paths = []
+        for item in result:
+            if isinstance(item, str):
+                paths.append(item)
+            elif isinstance(item, dict):
+                paths.append(item.get("path", item.get("name", str(item))))
+        return paths
+    if isinstance(result, dict):
+        for key in ("matches", "entries", "paths", "files"):
+            if key in result:
+                return extract_paths(result[key])
+    return []
+
+
+def parse_prometheus_metric(
+    text: str, metric_name: str
+) -> dict[str, Any] | None:
+    """Parse a single metric from Prometheus text exposition format.
+
+    Args:
+        text: Raw metrics text from /metrics endpoint.
+        metric_name: The metric name to find (e.g., "http_requests_total").
+
+    Returns:
+        Dict with "type" and "value" keys, or None if not found.
+        - type: "counter", "gauge", "histogram", "summary", "untyped"
+        - value: float or None if no sample line found
+    """
+    metric_type: str | None = None
+    metric_value: float | None = None
+
+    # Find TYPE declaration
+    type_pattern = re.compile(
+        rf"^#\s+TYPE\s+{re.escape(metric_name)}\s+(\w+)", re.MULTILINE
+    )
+    type_match = type_pattern.search(text)
+    if type_match:
+        metric_type = type_match.group(1).lower()
+
+    # Find a sample value line.
+    # Match: metric_name{labels} value  OR  metric_name value
+    # Avoid matching suffixes like _bucket, _sum, _count unless explicitly requested.
+    value_pattern = re.compile(
+        rf"^{re.escape(metric_name)}(?:\{{[^}}]*\}})?\s+([\d.eE+-]+(?:e[+-]?\d+)?)",
+        re.MULTILINE,
+    )
+    value_match = value_pattern.search(text)
+    if value_match:
+        try:
+            metric_value = float(value_match.group(1))
+        except ValueError:
+            pass
+
+    if metric_type is None and metric_value is None:
+        return None
+
+    return {
+        "type": metric_type or "untyped",
+        "value": metric_value,
+    }

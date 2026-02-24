@@ -302,6 +302,26 @@ class NexusClient:
         """GET /api/v2/features — enabled server features."""
         return self.http.get("/api/v2/features")
 
+    def metrics_raw(self) -> httpx.Response:
+        """GET /metrics — raw Prometheus metrics text."""
+        return self.http.get("/metrics")
+
+    def operations(self) -> httpx.Response:
+        """GET /api/v2/operations — recent operation log."""
+        return self.http.get("/api/v2/operations")
+
+    def probe_live(self) -> httpx.Response:
+        """GET /healthz/live — Kubernetes liveness probe."""
+        return self.http.get("/healthz/live")
+
+    def probe_ready(self) -> httpx.Response:
+        """GET /healthz/ready — Kubernetes readiness probe."""
+        return self.http.get("/healthz/ready")
+
+    def probe_startup(self) -> httpx.Response:
+        """GET /healthz/startup — Kubernetes startup probe."""
+        return self.http.get("/healthz/startup")
+
     # --- Zone REST API layer ---
 
     def create_zone(self, zone_id: str, *, name: str | None = None) -> httpx.Response:

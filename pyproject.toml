@@ -23,6 +23,7 @@ dependencies = [
     "testcontainers[compose]>=4.9",
     # Retry logic (cluster readiness)
     "tenacity>=9.0",
+    "psycopg2-binary>=2.9.11",
 ]
 
 [dependency-groups]
