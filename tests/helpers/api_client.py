@@ -102,12 +102,19 @@ class NexusClient:
 
     # --- JSON-RPC layer ---
 
-    def rpc(self, method: str, params: dict[str, Any] | None = None) -> RpcResponse:
+    def rpc(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        zone: str | None = None,
+    ) -> RpcResponse:
         """Send a JSON-RPC 2.0 request to /api/nfs/{method}.
 
         Args:
             method: RPC method name (e.g., "read", "write", "glob").
             params: Method parameters.
+            zone: Optional zone context (sent as X-Nexus-Zone-ID header).
 
         Returns:
             Parsed RpcResponse with result or error.
@@ -123,7 +130,10 @@ class NexusClient:
             "params": params or {},
             "id": request_id,
         }
-        resp = self.http.post(f"/api/nfs/{method}", json=body)
+        headers = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.post(f"/api/nfs/{method}", json=body, headers=headers)
 
         # Handle HTTP-level errors (401, 403, 500, etc.) as RPC errors
         if resp.status_code != 200:
@@ -147,40 +157,26 @@ class NexusClient:
 
     def write_file(self, path: str, content: str, *, zone: str | None = None) -> RpcResponse:
         """Write a file via JSON-RPC."""
-        params: dict[str, Any] = {"path": path, "content": content}
-        if zone:
-            params["zone_id"] = zone
-        return self.rpc("write", params)
+        return self.rpc("write", {"path": path, "content": content}, zone=zone)
 
     def read_file(self, path: str, *, zone: str | None = None) -> RpcResponse:
         """Read a file via JSON-RPC."""
-        params: dict[str, Any] = {"path": path}
-        if zone:
-            params["zone_id"] = zone
-        return self.rpc("read", params)
+        return self.rpc("read", {"path": path}, zone=zone)
 
     def delete_file(self, path: str, *, zone: str | None = None) -> RpcResponse:
         """Delete a file via JSON-RPC."""
-        params: dict[str, Any] = {"path": path}
-        if zone:
-            params["zone_id"] = zone
-        return self.rpc("delete", params)
+        return self.rpc("delete", {"path": path}, zone=zone)
 
     def mkdir(self, path: str, *, parents: bool = False, zone: str | None = None) -> RpcResponse:
         """Create a directory via JSON-RPC."""
         params: dict[str, Any] = {"path": path}
         if parents:
             params["parents"] = True
-        if zone:
-            params["zone_id"] = zone
-        return self.rpc("mkdir", params)
+        return self.rpc("mkdir", params, zone=zone)
 
     def list_dir(self, path: str, *, zone: str | None = None) -> RpcResponse:
         """List directory contents via JSON-RPC."""
-        params: dict[str, Any] = {"path": path}
-        if zone:
-            params["zone_id"] = zone
-        return self.rpc("list", params)
+        return self.rpc("list", {"path": path}, zone=zone)
 
     def glob(self, pattern: str, *, zone: str | None = None) -> RpcResponse:
         """Glob files via JSON-RPC."""

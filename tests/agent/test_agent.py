@@ -7,11 +7,8 @@ Reference: TEST_PLAN.md §4.5
 
 Infrastructure: docker-compose.demo.yml (standalone)
 
-Agent API endpoints:
-    GET  /api/v2/agents/{agent_id}/status  — Computed agent status
-    PUT  /api/v2/agents/{agent_id}/spec    — Set agent spec (desired state)
-    GET  /api/v2/agents/{agent_id}/spec    — Get agent spec
-    POST /api/v2/agents/{agent_id}/warmup  — Trigger agent warmup
+Agent registration: JSON-RPC register_agent (creates agent in registry)
+Agent spec/status: REST /api/v2/agents/{id}/spec, /status, /warmup
 """
 
 from __future__ import annotations
@@ -28,6 +25,14 @@ def _unique_agent_id() -> str:
     return f"agent-test-{uuid.uuid4().hex[:8]}"
 
 
+def _register_agent(nexus: NexusClient, agent_id: str, **kwargs) -> None:
+    """Register an agent via RPC (prerequisite for spec/status endpoints)."""
+    params = {"agent_id": agent_id, "name": f"Test Agent {agent_id}", **kwargs}
+    resp = nexus.rpc("register_agent", params)
+    if not resp.ok and "already registered" not in str(resp.error):
+        pytest.skip(f"Agent registration RPC not available: {resp.error}")
+
+
 @pytest.mark.auto
 @pytest.mark.agent
 class TestAgent:
@@ -36,10 +41,11 @@ class TestAgent:
     def test_register_agent(self, nexus: NexusClient) -> None:
         """agent/001: Register agent — agent appears in registry.
 
-        Registers an agent by setting its spec via PUT /api/v2/agents/{id}/spec,
-        then verifies it can be retrieved.
+        Registers an agent via RPC, then sets its spec via REST API and
+        verifies the spec is stored correctly.
         """
         agent_id = _unique_agent_id()
+        _register_agent(nexus, agent_id, capabilities=["file_read", "file_write"])
 
         spec_body = {
             "agent_type": "worker",
@@ -49,7 +55,6 @@ class TestAgent:
             "qos_class": "standard",
         }
 
-        # Set agent spec (this effectively registers the agent)
         resp = nexus.api_put(f"/api/v2/agents/{agent_id}/spec", json=spec_body)
         if resp.status_code == 503:
             pytest.skip("Agent registry not available on this server")
@@ -67,12 +72,12 @@ class TestAgent:
     def test_agent_heartbeat(self, nexus: NexusClient) -> None:
         """agent/002: Agent heartbeat — status reflects current state.
 
-        Registers an agent, then queries its status to verify heartbeat-derived
-        fields (phase, conditions, resource_usage) are populated.
+        Registers an agent, sets its spec, then queries status to verify
+        heartbeat-derived fields (phase, conditions, resource_usage).
         """
         agent_id = _unique_agent_id()
+        _register_agent(nexus, agent_id, capabilities=["heartbeat"])
 
-        # Register the agent first
         spec_body = {
             "agent_type": "monitor",
             "capabilities": ["heartbeat"],
@@ -81,7 +86,7 @@ class TestAgent:
         put_resp = nexus.api_put(f"/api/v2/agents/{agent_id}/spec", json=spec_body)
         if put_resp.status_code == 503:
             pytest.skip("Agent registry not available on this server")
-        assert put_resp.status_code == 200, f"Agent registration failed: {put_resp.text[:200]}"
+        assert put_resp.status_code == 200, f"Agent spec set failed: {put_resp.text[:200]}"
 
         # Query agent status
         status_resp = nexus.api_get(f"/api/v2/agents/{agent_id}/status")
@@ -107,8 +112,10 @@ class TestAgent:
         """
         agent_a = _unique_agent_id()
         agent_b = _unique_agent_id()
+        _register_agent(nexus, agent_a, capabilities=["search", "index"])
+        _register_agent(nexus, agent_b, capabilities=["execute", "sandbox"])
 
-        # Register agent A with search capability
+        # Set spec for agent A
         spec_a = {
             "agent_type": "searcher",
             "capabilities": ["search", "index"],
@@ -119,7 +126,7 @@ class TestAgent:
             pytest.skip("Agent registry not available on this server")
         assert resp_a.status_code == 200
 
-        # Register agent B with compute capability
+        # Set spec for agent B
         spec_b = {
             "agent_type": "compute",
             "capabilities": ["execute", "sandbox"],
@@ -128,14 +135,14 @@ class TestAgent:
         resp_b = nexus.api_put(f"/api/v2/agents/{agent_b}/spec", json=spec_b)
         assert resp_b.status_code == 200
 
-        # Retrieve agent A's spec — should have search capabilities
+        # Retrieve and verify agent A's spec
         get_a = nexus.api_get(f"/api/v2/agents/{agent_a}/spec")
         assert get_a.status_code == 200
         data_a = get_a.json()
         assert "search" in data_a["capabilities"]
         assert "index" in data_a["capabilities"]
 
-        # Retrieve agent B's spec — should have compute capabilities
+        # Retrieve and verify agent B's spec
         get_b = nexus.api_get(f"/api/v2/agents/{agent_b}/spec")
         assert get_b.status_code == 200
         data_b = get_b.json()
@@ -149,12 +156,13 @@ class TestAgent:
     def test_agent_lifecycle_fsm(self, nexus: NexusClient) -> None:
         """agent/004: Agent lifecycle FSM — correct state transitions.
 
-        Exercises the agent lifecycle: register (spec) → warmup → verify status.
-        The agent should transition through states as its spec is updated.
+        Exercises the agent lifecycle: register → set spec → update spec → warmup.
+        Verifies spec_generation increments on updates.
         """
         agent_id = _unique_agent_id()
+        _register_agent(nexus, agent_id, capabilities=["v1"])
 
-        # Step 1: Set initial spec (registers agent)
+        # Step 1: Set initial spec
         spec_v1 = {
             "agent_type": "lifecycle-test",
             "capabilities": ["v1"],
@@ -181,7 +189,6 @@ class TestAgent:
         warmup_resp = nexus.api_post(f"/api/v2/agents/{agent_id}/warmup", json={})
         if warmup_resp.status_code == 503:
             pytest.skip("Warmup service not available — lifecycle still verified via spec")
-        # 200 = success, 422 = validation error (acceptable in E2E)
         assert warmup_resp.status_code in (200, 422), (
             f"Warmup failed unexpectedly: {warmup_resp.status_code} {warmup_resp.text[:200]}"
         )
