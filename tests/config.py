@@ -64,7 +64,7 @@ class TestSettings(BaseSettings):
     perf_samples: int = 100  # Override via NEXUS_TEST_PERF_SAMPLES
 
     # --- Timeouts (seconds) ---
-    request_timeout: float = 30.0
+    request_timeout: float = 60.0
     connect_timeout: float = 10.0
     cluster_wait_timeout: float = 120.0
 

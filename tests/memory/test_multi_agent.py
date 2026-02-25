@@ -18,6 +18,32 @@ from tests.helpers.api_client import NexusClient
 from tests.helpers.assertions import extract_memory_results
 
 
+def _create_non_admin_key(
+    nexus: NexusClient,
+    user_id: str,
+    zone_id: str,
+    label: str,
+) -> str | None:
+    """Create a non-admin API key via POST /api/v2/auth/keys.
+
+    Returns the raw key string, or None if the endpoint is unavailable.
+    """
+    resp = nexus.http.post(
+        "/api/v2/auth/keys",
+        json={
+            "label": label,
+            "user_id": user_id,
+            "zone_id": zone_id,
+            "subject_type": "agent",
+            "is_admin": False,
+        },
+    )
+    if resp.status_code in (200, 201):
+        data = resp.json()
+        return data.get("raw_key") or data.get("key")
+    return None
+
+
 @pytest.mark.auto
 @pytest.mark.memory
 @pytest.mark.zone
@@ -151,20 +177,48 @@ class TestMultiAgentIsolation:
                 with contextlib.suppress(Exception):
                     nexus.memory_delete(mid_b, zone=zone_b)
 
-    @pytest.mark.xfail(
-        reason="Server does not enforce zone isolation on delete-by-id yet",
-        strict=True,
-    )
     def test_write_isolation(
         self, nexus: NexusClient, settings: TestSettings
     ) -> None:
-        """Agent A can't modify Agent B's memories (cross-zone write blocked)."""
+        """Agent A (non-admin) can't delete Agent B's memories cross-zone.
+
+        Creates non-admin API keys to test proper ReBAC zone isolation,
+        bypassing the admin bypass that grants admin users full access.
+        """
         tag = uuid.uuid4().hex[:8]
         zone_a = settings.zone
         zone_b = settings.scratch_zone
 
+        # Create non-admin keys for each zone
+        key_a = _create_non_admin_key(
+            nexus, f"agent_a_{tag}", zone_a, f"write-iso-a-{tag}"
+        )
+        key_b = _create_non_admin_key(
+            nexus, f"agent_b_{tag}", zone_b, f"write-iso-b-{tag}"
+        )
+        if not key_a or not key_b:
+            pytest.skip(
+                "Cannot create non-admin API keys (auth/keys endpoint unavailable)"
+            )
+
+        # Build non-admin clients with their own httpx sessions
+        import httpx
+
+        http_a = httpx.Client(
+            base_url=settings.url,
+            headers={"Authorization": f"Bearer {key_a}"},
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+        http_b = httpx.Client(
+            base_url=settings.url,
+            headers={"Authorization": f"Bearer {key_b}"},
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+        agent_a = NexusClient(http=http_a, base_url=settings.url, api_key=key_a)
+        agent_b = NexusClient(http=http_b, base_url=settings.url, api_key=key_b)
+
         # Agent B stores a memory in zone B
-        resp_b = nexus.memory_store(
+        resp_b = agent_b.memory_store(
             f"Agent B confidential {tag}: salary data is in vault",
             metadata={"agent": "agent_b", "tag": tag},
             zone=zone_b,
@@ -173,25 +227,22 @@ class TestMultiAgentIsolation:
         mid_b = resp_b.result.get("memory_id") if resp_b.result else None
 
         try:
+            if not mid_b:
+                pytest.fail("Agent B memory_store did not return a memory_id")
+
             # Agent A attempts to delete Agent B's memory from zone A context
-            if mid_b:
-                cross_del = nexus.memory_delete(mid_b, zone=zone_a)
-                # This should either fail or have no effect on zone B
-                if cross_del.ok:
-                    # Verify the memory still exists in zone B
-                    query_b = nexus.memory_query(f"vault {tag}", zone=zone_b)
-                    if query_b.ok:
-                        results = extract_memory_results(query_b)
-                        still_exists = any(
-                            tag in (
-                                r.get("content", "") if isinstance(r, dict) else str(r)
-                            )
-                            for r in results
-                        )
-                        assert still_exists, (
-                            "Cross-zone delete should not affect other zone's memory"
-                        )
+            cross_del = agent_a.memory_delete(mid_b, zone=zone_a)
+
+            # Verify the memory still exists in zone B regardless of delete response
+            get_resp = agent_b.memory_get(mid_b, zone=zone_b)
+            assert get_resp.ok, (
+                f"Cross-zone delete should not remove Agent B's memory. "
+                f"Delete returned ok={cross_del.ok}, but memory is gone."
+            )
         finally:
             if mid_b:
                 with contextlib.suppress(Exception):
+                    # Use admin client for cleanup
                     nexus.memory_delete(mid_b, zone=zone_b)
+            http_a.close()
+            http_b.close()
