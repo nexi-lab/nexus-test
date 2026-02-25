@@ -9,6 +9,8 @@ Provides utilities for:
 
 from __future__ import annotations
 
+import json
+import logging
 import statistics
 import time
 from collections.abc import Generator
@@ -19,6 +21,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from tests.helpers.api_client import NexusClient
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +232,7 @@ def seed_herb_data(
     seeded = 0
     errors: list[str] = []
 
-    for ext, paths in files_by_ext.items():
+    for _ext, paths in files_by_ext.items():
         for file_path in paths:
             if seeded >= max_files:
                 break
@@ -252,3 +256,91 @@ def seed_herb_data(
         zones_seeded=[zone] if seeded > 0 else [],
         errors=errors,
     )
+
+
+# ---------------------------------------------------------------------------
+# HERB benchmark data loading
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HerbQuestion:
+    """A single HERB QA benchmark question (immutable)."""
+
+    product: str
+    question: str
+    ground_truth: tuple[str, ...] = ()
+    citations: tuple[str, ...] = ()
+    question_type: str = ""
+
+
+def load_herb_qa(
+    benchmark_dir: str | Path,
+    *,
+    max_questions: int = 0,
+) -> list[HerbQuestion]:
+    """Load HERB QA pairs from answerable.jsonl.
+
+    If max_questions > 0, return only that many. Otherwise return all.
+    """
+    qa_path = Path(benchmark_dir).expanduser().resolve() / "qa" / "answerable.jsonl"
+    if not qa_path.is_file():
+        return []
+
+    questions: list[HerbQuestion] = []
+    with qa_path.open(encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "Skipping malformed JSONL line %d in %s: %s", line_no, qa_path, exc
+                )
+                continue
+            questions.append(
+                HerbQuestion(
+                    product=data.get("product", ""),
+                    question=data.get("question", ""),
+                    ground_truth=tuple(data.get("ground_truth", ())),
+                    citations=tuple(data.get("citations", ())),
+                    question_type=data.get("question_type", ""),
+                )
+            )
+            if max_questions > 0 and len(questions) >= max_questions:
+                break
+
+    return questions
+
+
+def seed_search_files(
+    nexus: NexusClient,
+    base_path: str,
+    files: list[dict[str, str]],
+    *,
+    zone: str | None = None,
+) -> list[dict[str, str]]:
+    """Seed a set of files for search tests.
+
+    Args:
+        nexus: NexusClient to use.
+        base_path: Directory prefix for all files.
+        files: List of dicts with "name" and "content" keys.
+        zone: Zone ID for triggering search refresh with zone-scoped paths.
+
+    Returns:
+        List of dicts with "path" and "content" for each successfully written file.
+    """
+    seeded: list[dict[str, str]] = []
+    for f in files:
+        path = f"{base_path}/{f['name']}"
+        resp = nexus.write_file(path, f["content"])
+        if resp.ok:
+            seeded.append({"path": path, "content": f["content"]})
+            # Trigger search index refresh with zone-scoped path
+            nexus.search_refresh(path, zone=zone)
+        else:
+            logger.warning("Failed to seed %s: %s", path, resp.error)
+    return seeded

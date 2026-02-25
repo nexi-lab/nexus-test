@@ -11,12 +11,21 @@ Groups: auto, memory
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 import pytest
 
 from tests.helpers.api_client import NexusClient
 from tests.helpers.assertions import extract_memory_results
+
+from .conftest import poll_memory_query_with_latency
+
+logger = logging.getLogger(__name__)
+
+# Query latency SLO: single query round-trip should be under 500ms
+QUERY_LATENCY_SLO_MS = 500.0
 
 
 @pytest.mark.auto
@@ -30,15 +39,17 @@ class TestTemporalReasoning:
         """Query for Q3 revenue — verify the timestamped memory is retrievable."""
         assert seeded_memories, "No seeded memories available"
 
-        # Query broadly for the content we seeded (avoids dependency on
-        # server-side temporal filtering which may not be available)
-        resp = nexus.memory_query("Q3 2025 revenue", limit=50)
-        assert resp.ok, f"Query failed: {resp.error}"
+        memory_ids = [m["memory_id"] for m in seeded_memories if m.get("memory_id")]
+        pr = poll_memory_query_with_latency(
+            nexus, "Q3 2025 revenue",
+            match_substring="Q3",
+            memory_ids=memory_ids,
+            limit=50,
+        )
 
-        results = extract_memory_results(resp)
         contents = [
             r.get("content", "") if isinstance(r, dict) else str(r)
-            for r in results
+            for r in pr.results
         ]
         q3_found = any("Q3" in c and "revenue" in c.lower() for c in contents)
         assert q3_found, (
@@ -46,12 +57,19 @@ class TestTemporalReasoning:
             f"Got {len(contents)} results: {contents[:5]}"
         )
 
-        # Verify the seeded memory has the correct timestamp
         q3_seed = next(
             (m for m in seeded_memories if "Q3" in m.get("content", "")), None
         )
         assert q3_seed is not None, "Q3 memory missing from seeded_memories"
         assert q3_seed["timestamp"] == "2025-09-20T14:00:00Z"
+
+        logger.info(
+            "test_exact_date_query: query_latency=%.1fms via_fallback=%s",
+            pr.query_latency_ms, pr.via_fallback,
+        )
+        assert pr.query_latency_ms < QUERY_LATENCY_SLO_MS, (
+            f"Query latency {pr.query_latency_ms:.1f}ms exceeds {QUERY_LATENCY_SLO_MS}ms SLO"
+        )
 
     def test_date_range_query(
         self, nexus: NexusClient, seeded_memories: list[dict[str, Any]]
@@ -59,13 +77,13 @@ class TestTemporalReasoning:
         """Query for revenue data — verify multiple quarters are retrievable."""
         assert seeded_memories, "No seeded memories available"
 
-        # Try time-filtered query first; fall back to broad query
+        t0 = time.monotonic()
         resp = nexus.memory_query(
-            "revenue",
-            limit=50,
+            "revenue", limit=50,
             time_start="2025-07-01T00:00:00Z",
             time_end="2025-10-31T23:59:59Z",
         )
+        query_latency_ms = (time.monotonic() - t0) * 1000
         assert resp.ok, f"Query failed: {resp.error}"
 
         results = extract_memory_results(resp)
@@ -73,33 +91,38 @@ class TestTemporalReasoning:
             r.get("content", "") if isinstance(r, dict) else str(r)
             for r in results
         ]
-
-        # If time filtering returned results with Q3, great
         q3_found = any("Q3" in c and "revenue" in c.lower() for c in contents)
-        if q3_found:
-            return
 
-        # Fallback: query without time filter and verify Q3 exists among all
-        resp_all = nexus.memory_query("revenue", limit=50)
-        assert resp_all.ok, f"Broad query failed: {resp_all.error}"
-        results_all = extract_memory_results(resp_all)
-        contents_all = [
-            r.get("content", "") if isinstance(r, dict) else str(r)
-            for r in results_all
-        ]
-        q3_found = any("Q3" in c and "revenue" in c.lower() for c in contents_all)
+        if not q3_found:
+            memory_ids = [m["memory_id"] for m in seeded_memories if m.get("memory_id")]
+            pr = poll_memory_query_with_latency(
+                nexus, "revenue",
+                match_substring="Q3",
+                memory_ids=memory_ids,
+                limit=50,
+            )
+            contents = [
+                r.get("content", "") if isinstance(r, dict) else str(r)
+                for r in pr.results
+            ]
+            q3_found = any("Q3" in c and "revenue" in c.lower() for c in contents)
+            query_latency_ms = pr.query_latency_ms
+
         assert q3_found, (
             f"Expected Q3 revenue in results. "
-            f"Got {len(contents_all)} results: {contents_all[:5]}"
+            f"Got {len(contents)} results: {contents[:5]}"
         )
 
-        # Verify seeded timestamp is in the Jul-Oct range
         q3_seed = next(
             (m for m in seeded_memories if "Q3" in m.get("content", "")), None
         )
         assert q3_seed is not None
-        ts = q3_seed["timestamp"]
-        assert "2025-09" in ts, f"Q3 timestamp should be Sep 2025, got {ts}"
+        assert "2025-09" in q3_seed["timestamp"]
+
+        logger.info("test_date_range_query: query_latency=%.1fms", query_latency_ms)
+        assert query_latency_ms < QUERY_LATENCY_SLO_MS, (
+            f"Query latency {query_latency_ms:.1f}ms exceeds {QUERY_LATENCY_SLO_MS}ms SLO"
+        )
 
     def test_recency_query(
         self, nexus: NexusClient, seeded_memories: list[dict[str, Any]]
@@ -107,31 +130,38 @@ class TestTemporalReasoning:
         """Query for revenue — most recent should be Q3 (Sept 2025)."""
         assert seeded_memories, "No seeded memories available"
 
-        # Fetch all revenue memories and verify Q3 is among them
-        resp = nexus.memory_query("revenue", limit=50)
-        assert resp.ok, f"Query failed: {resp.error}"
+        memory_ids = [m["memory_id"] for m in seeded_memories if m.get("memory_id")]
+        pr = poll_memory_query_with_latency(
+            nexus, "revenue",
+            match_substring="revenue",
+            memory_ids=memory_ids,
+            limit=50,
+        )
 
-        results = extract_memory_results(resp)
         contents = [
             r.get("content", "") if isinstance(r, dict) else str(r)
-            for r in results
+            for r in pr.results
         ]
         revenue_items = [c for c in contents if "revenue" in c.lower()]
         assert revenue_items, (
             f"Expected revenue memories. Got {len(contents)} results: {contents[:5]}"
         )
 
-        # Verify Q3 is among the revenue items (it's the most recent quarter)
         q3_found = any("Q3" in c for c in revenue_items)
         assert q3_found, (
             f"Expected Q3 (most recent) in revenue results: {revenue_items[:5]}"
         )
 
-        # Client-side recency check: Q3 has the latest timestamp
         revenue_seeds = [
             m for m in seeded_memories if "revenue" in m.get("content", "").lower()
         ]
         latest = max(revenue_seeds, key=lambda m: m.get("timestamp", ""))
-        assert "Q3" in latest["content"], (
-            f"Most recent revenue seed should be Q3, got: {latest['content']}"
+        assert "Q3" in latest["content"]
+
+        logger.info(
+            "test_recency_query: query_latency=%.1fms via_fallback=%s",
+            pr.query_latency_ms, pr.via_fallback,
+        )
+        assert pr.query_latency_ms < QUERY_LATENCY_SLO_MS, (
+            f"Query latency {pr.query_latency_ms:.1f}ms exceeds {QUERY_LATENCY_SLO_MS}ms SLO"
         )
