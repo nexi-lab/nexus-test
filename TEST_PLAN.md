@@ -1,6 +1,6 @@
 # Nexus Test Plan
 
-~367 tests across 14 run-type groups and 40 feature groups. Tests exercise the
+~391 tests across 14 run-type groups and 40 feature groups. Tests exercise the
 system through the `nexus` CLI and HTTP API only — no internal Python imports.
 
 ---
@@ -238,6 +238,19 @@ Test IDs follow `nxfs/{feature}/{NNN}` (e.g., `nxfs/kernel/001`).
 | kernel/025 | Non-existent read → 404 | quick,auto,kernel | Clear error |
 | kernel/026 | Write to missing parent → error | auto,kernel | Parent dir required |
 | kernel/027 | Max path length | auto,kernel | 4096 chars handled |
+| kernel/028 | Edit: exact match search/replace | quick,auto,kernel | Old string replaced, diff returned |
+| kernel/029 | Edit: whitespace-normalized match | auto,kernel | Leading/trailing whitespace ignored, match succeeds |
+| kernel/030 | Edit: fuzzy match (Levenshtein) | auto,kernel | Slightly different old_str matches at threshold 0.85 |
+| kernel/031 | Edit: fuzzy threshold rejection | auto,kernel | Below-threshold mismatch → error, file unchanged |
+| kernel/032 | Edit: if_match concurrency control | auto,kernel | Stale etag → ConflictError, file unchanged |
+| kernel/033 | Edit: preview mode (dry-run) | auto,kernel | preview=True returns diff but does not write |
+| kernel/034 | Edit: multi-edit batch | auto,kernel | Multiple (old,new) edits applied in sequence |
+| kernel/035 | Edit: hint_line targeting | auto,kernel | Edit applied at hinted line, not other occurrences |
+| kernel/036 | Edit: allow_multiple replaces all | auto,kernel | All occurrences replaced when allow_multiple=true |
+| kernel/037 | Edit: non-existent file → 404 | auto,kernel | NexusFileNotFoundError returned |
+| kernel/038 | Edit: permission enforcement | auto,kernel,rebac | Edit without write permission → 403 |
+| kernel/039 | Edit: etag updated after edit | auto,kernel | New etag differs from pre-edit etag |
+| kernel/040 | Edit: version incremented | auto,kernel,versioning | Version number increments after edit |
 | kernel/050 | Large file (100MB) | stress,kernel | Completes, checksum OK |
 | kernel/051 | Concurrent writes (10 threads) | stress,kernel | No corruption |
 | kernel/052 | 10K files flat directory ls | stress,perf,kernel | benchmarks/performance data |
@@ -419,6 +432,17 @@ Cross-validate with LongMemEval and MemoryAgentBench.
 | search/007 | Code search (Zoekt) | auto,search | Trigram index works |
 | search/008 | Search daemon warmup | auto,search | Zero cold-start |
 | search/009 | Embedding cache dedup | auto,search,perf | 90%+ cache hit on repeated content |
+| search/010 | Search accuracy: NDCG@10 on HERB | auto,perf,search | NDCG@10 ≥ 0.6 on HERB answerable Qs |
+| search/011 | Search accuracy: MRR on HERB | auto,perf,search | MRR ≥ 0.5 on HERB answerable Qs |
+| search/012 | Search accuracy: EM + F1 on HERB | auto,perf,search | EM ≥ 0.3, F1 ≥ 0.5 vs ground truth |
+| search/013 | Semantic search: BEIR subset (SciFact) | auto,perf,search | NDCG@10 ≥ 0.5 on SciFact |
+| search/014 | Semantic search: BEIR subset (NFCorpus) | auto,perf,search | NDCG@10 ≥ 0.4 on NFCorpus |
+| search/015 | Multi-hop retrieval (HotPotQA) | auto,search,llm | Supporting facts retrieved for 2-hop Qs |
+| search/016 | Multi-hop retrieval (MuSiQue) | auto,search,llm | 2–4 hop compositional retrieval succeeds |
+| search/017 | Query expansion recall lift | auto,search | Expanded query recall > raw query recall |
+| search/018 | RAG faithfulness (RAGAS) | auto,search,llm | Faithfulness ≥ 0.7 (no hallucination) |
+| search/019 | RAG answer relevancy (RAGAS) | auto,search,llm | Answer relevancy ≥ 0.7 |
+| search/020 | RAG context precision (RAGAS) | auto,search,llm | Context precision ≥ 0.6 |
 
 #### Benchmark Datasets & Sources for search + RAG (search/002–009, llm/003)
 
@@ -442,6 +466,11 @@ answer quality.
 | P1 | llm/003 | **RAGAS framework** | [GitHub](https://github.com/explodinggradients/ragas) / [Docs](https://docs.ragas.io/) | `pip install ragas` | Reference-free RAG evaluation framework. Metrics: faithfulness (no hallucination), answer relevancy, context precision, context recall. Use for automated CI evaluation without ground truth. |
 | P1 | search/002 | **MTEB Retrieval** (ICLR 2025) | [GitHub](https://github.com/embeddings-benchmark/mteb) / [Leaderboard](https://huggingface.co/spaces/mteb/leaderboard) | `pip install mteb` | Massive Text Embedding Benchmark. Use retrieval subset to validate embedding model selection. Compare our embedding model against MTEB leaderboard baselines. |
 | P2 | search/007 | **CodeSearchNet** | [GitHub](https://github.com/github/CodeSearchNet) | `git clone https://github.com/github/CodeSearchNet` | 2M (comment, code) pairs across 6 languages (Python, JS, Ruby, Go, Java, PHP). Human relevance judgements for evaluation. Use NDCG metric. Benchmark concluded but dataset still valuable for code search quality testing. |
+| P0 | search/010-012 | **HERB Q&A** (local) | `benchmarks/herb/qa/` | Already in repo — 815 answerable + 699 unanswerable questions | Compute NDCG@10, MRR, EM, F1 against ground truth. Primary accuracy benchmark. |
+| P0 | search/013-014 | **BEIR subsets** (NeurIPS 2021) | [HuggingFace](https://huggingface.co/BeIR) | `pip install beir` | SciFact + NFCorpus subsets. Evaluate with NDCG@10. Standard IR benchmark. |
+| P0 | search/015 | **HotPotQA** (EMNLP 2018) | [HuggingFace](https://huggingface.co/datasets/hotpotqa/hotpot_qa) | `datasets.load_dataset("hotpotqa/hotpot_qa")` | 113K multi-hop Q&A. Use distractor setting (10 paragraphs, 2 relevant) for retrieval precision. |
+| P1 | search/016 | **MuSiQue** | [HuggingFace](https://huggingface.co/datasets/drt/musique) | `datasets.load_dataset("drt/musique")` | 2–4 hop compositional QA with unanswerable questions. Harder than HotPotQA. |
+| P0 | search/018-020 | **RAGAS framework** | [Docs](https://docs.ragas.io/) | `pip install ragas` | Reference-free RAG evaluation: faithfulness, answer relevancy, context precision. No ground truth needed. |
 
 ### 4.9 — Pay
 
@@ -998,16 +1027,16 @@ docker network connect nexus_nexus-network nexus-witness
 ## 7. Execution Phases
 
 ### Phase 1: Kernel Correctness (Week 1-2)
-- Tests: `kernel/*`, `zone/*`, `hooks/*`, `auth/*`, `cli/001-002,018`, `obs/001`, `contract/001-002,005`
+- Tests: `kernel/*` (incl. kernel/028-040 file_edit), `zone/*`, `hooks/*`, `auth/*`, `cli/001-002,018`, `obs/001`, `contract/001-002,005`
 - Data: `benchmarks/performance/`
 - Infra: `docker compose -f dockerfiles/docker-compose.demo.yml up -d`
-- Count: ~55 tests
+- Count: ~68 tests
 
 ### Phase 2: Services + Core Bricks (Week 3-4)
-- Tests: `namespace/*`, `agent/*`, `scheduler/*`, `eventlog/*`, `sync/*`, `mount/*`, `upload/*`, `rebac/*`, `memory/001-019,022-023`, `search/*`, `pay/*`
-- Data: `benchmarks/herb/enterprise-context/`, `benchmarks/memory/longmemeval/`, `benchmarks/memory/locomo/`, `benchmarks/memory/memoryagentbench/`, `benchmarks/memory/tofu/`
+- Tests: `namespace/*`, `agent/*`, `scheduler/*`, `eventlog/*`, `sync/*`, `mount/*`, `upload/*`, `rebac/*`, `memory/001-019,022-023`, `search/*` (incl. search/010-020 accuracy + deep search), `pay/*`
+- Data: `benchmarks/herb/enterprise-context/`, `benchmarks/herb/qa/`, `benchmarks/search/hotpotqa/`, `benchmarks/search/beir/`, `benchmarks/search/musique/`, `benchmarks/memory/longmemeval/`, `benchmarks/memory/locomo/`, `benchmarks/memory/memoryagentbench/`, `benchmarks/memory/tofu/`
 - Infra: `docker compose -f dockerfiles/docker-compose.demo.yml up -d` (includes PostgreSQL + Dragonfly)
-- Count: ~100 tests
+- Count: ~111 tests
 - Note: memory/020-021 (perf benchmarks) deferred to Phase 5
 
 ### Phase 3: All Bricks + Dynamic Management (Week 5-6)
@@ -1029,7 +1058,7 @@ docker network connect nexus_nexus-network nexus-witness
 - Count: ~47 tests
 - Note: memory/020 (write + consolidation latency) and memory/021 (context saturation baseline) require full perf harness
 
-### Grand Total: ~367 tests
+### Grand Total: ~391 tests
 
 ---
 
