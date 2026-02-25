@@ -168,6 +168,117 @@ def assert_permission_denied(response: RpcResponse) -> RpcResponse:
     return response
 
 
+def extract_memory_results(response: RpcResponse) -> list[dict]:
+    """Extract the results list from a memory query/search response.
+
+    Handles various response shapes:
+    - list of dicts
+    - dict with "results" or "memories" key
+    - single dict result
+
+    Returns:
+        List of result dicts (may be empty).
+    """
+    results = response.result
+    if isinstance(results, dict):
+        results = results.get("results", results.get("memories", []))
+    if not isinstance(results, list):
+        results = [results] if results else []
+    return results
+
+
+def assert_memory_stored(response: RpcResponse) -> dict:
+    """Assert memory_store succeeded and return result with memory_id.
+
+    Raises:
+        AssertionError: If the response is an error or missing memory_id.
+    """
+    assert response.ok, (
+        f"Expected memory_store success but got error: "
+        f"code={response.error.code}, message={response.error.message}"
+    )
+    result = response.result
+    assert isinstance(result, dict), f"Expected dict result, got {type(result)}"
+    assert "memory_id" in result, f"Result missing memory_id: {result}"
+    assert result["memory_id"], "memory_id should be non-empty"
+    return result
+
+
+def assert_memory_not_found(
+    nexus: NexusClient, memory_id: str, *, zone: str | None = None
+) -> None:
+    """Assert a specific memory no longer exists by trying to fetch its versions."""
+    resp = nexus.memory_get_versions(memory_id, zone=zone)
+    if resp.ok and resp.result:
+        assert not resp.result, f"Memory {memory_id} should not exist but got: {resp.result}"
+
+
+def assert_memory_query_contains(
+    response: RpcResponse, *, content_substring: str
+) -> dict:
+    """Assert memory query result contains expected content.
+
+    Returns:
+        The first matching result dict.
+
+    Raises:
+        AssertionError: If the query failed or no result contains the substring.
+    """
+    assert response.ok, (
+        f"Expected memory_query success but got error: "
+        f"code={response.error.code}, message={response.error.message}"
+    )
+    results = extract_memory_results(response)
+
+    for item in results:
+        content = item.get("content", "") if isinstance(item, dict) else str(item)
+        if content_substring in content:
+            return item
+
+    all_content = [
+        (r.get("content", "") if isinstance(r, dict) else str(r)) for r in results
+    ]
+    raise AssertionError(
+        f"No memory result contains {content_substring!r}. "
+        f"Got {len(results)} results: {all_content[:5]}"
+    )
+
+
+def assert_memory_purged(
+    nexus: NexusClient, entity: str, *, zone: str | None = None
+) -> None:
+    """Assert entity purged from store + search index + knowledge graph.
+
+    Triple-verify: query (store), search (index), graph query (knowledge graph).
+    """
+    # 1. Query store
+    query_resp = nexus.memory_query(entity, zone=zone)
+    if query_resp.ok:
+        results = extract_memory_results(query_resp)
+        matching = [
+            r for r in results
+            if entity.lower() in (r.get("content", "") if isinstance(r, dict) else str(r)).lower()
+        ]
+        assert not matching, f"Entity {entity!r} still in store: {matching[:3]}"
+
+    # 2. Search index
+    search_resp = nexus.memory_search(entity, zone=zone)
+    if search_resp.ok:
+        results = extract_memory_results(search_resp)
+        matching = [
+            r for r in results
+            if entity.lower() in (r.get("content", "") if isinstance(r, dict) else str(r)).lower()
+        ]
+        assert not matching, f"Entity {entity!r} still in search index: {matching[:3]}"
+
+    # 3. Knowledge graph
+    graph_resp = nexus.memory_graph_query(entity, zone=zone)
+    if graph_resp.status_code == 200:
+        data = graph_resp.json()
+        nodes = data.get("nodes", data.get("entities", []))
+        assert not nodes, f"Entity {entity!r} still in knowledge graph: {nodes[:3]}"
+
+
 def assert_health_ok(nexus: NexusClient) -> dict[str, Any]:
     """Assert that the /health endpoint returns a healthy response."""
     resp = nexus.api_get("/health")

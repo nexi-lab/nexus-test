@@ -43,4 +43,5 @@ docker-compose.override.yml
 
 # Performance data
 /perf-data/
-/benchmarks/
+/benchmarks/data/
+/benchmarks/results/

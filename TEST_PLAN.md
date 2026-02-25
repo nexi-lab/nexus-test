@@ -1,6 +1,6 @@
 # Nexus Test Plan
 
-~350 tests across 14 run-type groups and 40 feature groups. Tests exercise the
+~367 tests across 14 run-type groups and 40 feature groups. Tests exercise the
 system through the `nexus` CLI and HTTP API only — no internal Python imports.
 
 ---
@@ -117,6 +117,12 @@ docker start nexus-node-1
 | `benchmarks/herb/qa/` | 815 answerable + 699 unanswerable questions with ground truth | Search accuracy, RAG quality |
 | `benchmarks/performance/nexus-data/cas/` | Pre-existing CAS blobs with known hashes | CAS dedup, integrity checks |
 | `generate_perf_data.py` | On-demand test data generator | Fresh perf data |
+| `benchmarks/memory/longmemeval/` | LongMemEval_S (500 Qs, 40 sessions, ~115K tokens) | memory/014 temporal, memory/016 abstention |
+| `benchmarks/memory/locomo/` | LoCoMo (10 convos × 300 turns × 35 sessions) + MC10 variant | memory/014 temporal, memory/015 multi-session |
+| `benchmarks/memory/memoryagentbench/` | MemoryAgentBench (FactConsolidation + EventQA + LRU subsets) | memory/015 multi-session, memory/017 conflict |
+| `benchmarks/memory/tofu/` | TOFU (200 fictitious profiles, forget/retain splits) | memory/018 selective forgetting |
+| `benchmarks/memory/ultradomain/` | UltraDomain (4 domains, 600K–5M tokens from 428 textbooks) | memory/021 context saturation |
+| `benchmarks/memory/graphrag-bench/` | GraphRAG-Bench (16 disciplines, multi-format Qs) | memory/023 multi-agent isolation |
 
 ---
 
@@ -321,6 +327,44 @@ Test IDs follow `nxfs/{feature}/{NNN}` (e.g., `nxfs/kernel/001`).
 | memory/011 | Memory lineage (append-only) | auto,memory | Lineage chain intact |
 | memory/012 | Coreference resolution | auto,memory | "it"/"the project" resolved |
 | memory/013 | Relationship extraction | auto,memory | Relations indexed in graph |
+| memory/014 | Temporal reasoning | auto,memory | Time-scoped query returns correct epoch result |
+| memory/015 | Multi-session reasoning | auto,memory | Answer synthesized from 3+ sessions correct |
+| memory/016 | Abstention (hallucination guard) | auto,memory | Returns "unknown" when answer not in memory |
+| memory/017 | Knowledge conflict resolution | auto,memory | Contradictory facts → latest wins or conflict surfaced |
+| memory/018 | Selective forgetting (GDPR) | auto,memory,security | Entity purged from store + index + graph |
+| memory/019 | Silent failure detection | auto,memory | Corrupted memory flagged, not served silently |
+| memory/020 | Write + consolidation latency | stress,perf,memory | Write p95 < 50ms, consolidation < 5s |
+| memory/021 | Context saturation baseline | auto,perf,memory | Memory-assisted accuracy ≥ full-context baseline |
+| memory/022 | Procedural memory (feedback learning) | auto,memory | Response quality improves after accumulated feedback |
+| memory/023 | Multi-agent memory isolation | auto,memory,zone | Agent A private memories invisible to Agent B |
+
+#### Benchmark Datasets & Sources for memory/014–023
+
+Each new test maps to established benchmarks and open-source datasets. Use these
+as reference data, evaluation methodology, and ground-truth baselines.
+
+| Test ID | Benchmark / Dataset | Source | How to Obtain | What It Provides |
+|---------|-------------------|--------|---------------|------------------|
+| memory/014 | **LongMemEval** (ICLR 2025) | [GitHub](https://github.com/xiaowu0162/LongMemEval) / [HuggingFace](https://huggingface.co/datasets) | `git clone https://github.com/xiaowu0162/LongMemEval` → `data/` folder; also on HuggingFace | 500 curated questions across 40–500 sessions with timestamps. Temporal reasoning subset tests "when did X happen?" and time-scoped retrieval. Use `LongMemEval_S` (~115K tokens) for CI, `LongMemEval_M` (~500 sessions) for stress. |
+| memory/014 | **LoCoMo** (ACL 2024) | [GitHub](https://github.com/snap-research/locomo) / [HuggingFace](https://huggingface.co/datasets/Percena/locomo-mc10) | `git clone https://github.com/snap-research/locomo` | 10 conversations × 300 turns × 35 sessions. Temporal question subset with ground-truth. LoCoMo-MC10 variant (1,986 items, 10-option MC) on HuggingFace for automated eval. |
+| memory/015 | **LoCoMo multi-hop subset** | [GitHub](https://github.com/snap-research/locomo) | Same as above, filter `question_type=multi-hop` | Multi-hop questions requiring synthesis across sessions. F1 + BLEU-1 + LLM-as-judge metrics. |
+| memory/015 | **MemoryAgentBench** (ICLR 2026) | [GitHub](https://github.com/HUST-AI-HYZ/MemoryAgentBench) / [HuggingFace](https://huggingface.co/datasets/ai-hyz/MemoryAgentBench) | `pip install` + auto-download on first run | "Long-Range Understanding" competency subset. Multi-turn format simulating incremental info across sessions. |
+| memory/016 | **LongMemEval abstention subset** | [GitHub](https://github.com/xiaowu0162/LongMemEval) | Filter questions where `answer_type=unanswerable` | Tests whether system returns "I don't know" vs. hallucinating. 30% of questions designed to have no answer in memory. |
+| memory/016 | **HERB unanswerable Q&A** (local) | `benchmarks/herb/qa/` | Already in repo — 699 unanswerable questions with ground truth | Cross-reference with memory store: after populating memory with HERB context, query with unanswerable Qs and verify abstention. |
+| memory/017 | **MemoryAgentBench FactConsolidation** | [HuggingFace](https://huggingface.co/datasets/ai-hyz/MemoryAgentBench) | Auto-download; `Single-Hop FactConsolidation` + `Multi-Hop FactConsolidation` subsets | Contradictory facts injected at different turns. Measures whether system resolves to latest fact or surfaces conflict. Also see Zep/Graphiti bi-temporal model for methodology. |
+| memory/017 | **Zep/Graphiti temporal KG** methodology | [Paper](https://arxiv.org/abs/2501.13956) / [Graphiti](https://github.com/getzep/graphiti) | Reference architecture; adapt bi-temporal validity-interval approach | Bi-temporal model tracks event-time vs. ingestion-time. Every edge has validity intervals — use as design reference for conflict detection. |
+| memory/018 | **TOFU** (Task of Fictitious Unlearning) | [GitHub](https://github.com/locuslab/tofu) / [HuggingFace](https://huggingface.co/datasets/locuslab/TOFU) | `datasets.load_dataset("locuslab/TOFU")` | 200 fictitious author profiles. Forget subset + retain subset. Verify that after "forget entity X", queries about X return nothing while other memories intact. |
+| memory/018 | **Machine Unlearning methodology** | [Survey](https://github.com/tamlhp/awesome-machine-unlearning) | Reference checklist | Evaluation criteria: (1) completeness — forgotten data truly gone, (2) no side effects — retained data unaffected, (3) verifiability — audit trail of deletion. |
+| memory/019 | **Cognee evals methodology** | [Blog](https://www.cognee.ai/blog/deep-dives/ai-memory-evals-0825) | Reference methodology | Cognee benchmarked Mem0, LightRAG, Graphiti with HotPotQA (24 multi-hop Qs × 45 runs). Use EM + F1 + DeepEval + correctness metrics to detect silent degradation. |
+| memory/019 | **Custom corruption harness** | Design from [Anatomy of Agentic Memory](https://arxiv.org/html/2602.19320) | Build in-repo | Inject bit-flipped / truncated / stale memories. Verify system detects inconsistency via checksums or semantic validation rather than serving corrupted data silently. |
+| memory/020 | **Mem0 benchmark methodology** | [Paper](https://arxiv.org/abs/2504.19413) / [Blog](https://mem0.ai/research) | Reference SLO methodology | Mem0 measures Token Consumption + Latency per query on LoCoMo. Use same methodology: measure write p95, consolidation wall-time, token cost per memory op. |
+| memory/020 | **Letta Leaderboard** | [Blog](https://www.letta.com/blog/letta-leaderboard) | Reference | Letta tracks latency + token usage across models. Use as baseline comparison for our write + consolidation SLOs. |
+| memory/021 | **Context saturation gap (Δ)** methodology | [Anatomy of Agentic Memory](https://arxiv.org/html/2602.19320) | Build in-repo; reference paper | Metric Δ = accuracy(memory-assisted) − accuracy(full-context-stuffing). If Δ ≤ 0, memory system adds no value. Use HERB Q&A ground truth to measure both approaches. |
+| memory/021 | **LightRAG / UltraDomain** | [GitHub](https://github.com/HKUDS/LightRAG) / [HuggingFace](https://huggingface.co/datasets) | `git clone https://github.com/HKUDS/LightRAG` → `datasets/` | 4 domains (Agriculture, CS, Legal, Mix) from 428 textbooks, 600K–5M tokens. Compare chunk-based vs. graph-based vs. full-context retrieval accuracy. |
+| memory/022 | **MemoryBench procedural subset** | [Paper](https://arxiv.org/html/2510.17281v1) | Reference methodology; 20K cases across 3 domains | Procedural memory evaluation: inject explicit feedback (like/dislike) and implicit feedback (copy, session-close). Verify subsequent responses improve on same task type. |
+| memory/022 | **Letta dynamic memory eval** | [Blog](https://www.letta.com/blog/benchmarking-ai-agent-memory) | Reference | Tests whether agent learns *when* to use memory tools, not just retrieval accuracy. Adapt for feedback-loop testing. |
+| memory/023 | **GraphRAG-Bench** | [GitHub](https://github.com/GraphRAG-Bench/GraphRAG-Benchmark) / [HuggingFace](https://huggingface.co/datasets/GraphRAG-Bench/GraphRAG-Bench) | `datasets.load_dataset("GraphRAG-Bench/GraphRAG-Bench")` | 16 disciplines, multi-format questions. Use to validate that agent-scoped graph partitions return correct answers only from that agent's subgraph. |
+| memory/023 | **Zone-scoped HERB partitions** (local) | `benchmarks/herb/enterprise-context/` | Already in repo | Partition HERB data by department (eng/sales). Store as separate agent memories. Verify cross-agent isolation while shared memories remain accessible. |
 
 ### 4.8 — Search
 
@@ -667,6 +711,8 @@ All federation tests require 2+ nodes.
 | slo/005 | Search full-text latency | slo,perf,search | p95 < 100ms, p99 < 300ms |
 | slo/006 | Search semantic latency | slo,perf,search | p95 < 200ms, p99 < 500ms |
 | slo/007 | Memory query latency | slo,perf,memory | p95 < 100ms, p99 < 200ms |
+| slo/007a | Memory write latency | slo,perf,memory | p95 < 50ms |
+| slo/007b | Memory consolidation latency | slo,perf,memory | Wall-time < 5s for 50-memory ACE pass |
 | slo/008 | Pay transfer latency | slo,perf,pay | p50 < 10ms, p99 < 50ms |
 | slo/009 | ReBAC check latency | slo,perf,rebac | p50 < 1ms, p95 < 5ms, p99 < 15ms |
 | slo/010 | API health endpoint | slo,perf | p99 < 10ms |
@@ -895,10 +941,11 @@ docker network connect nexus_nexus-network nexus-witness
 - Count: ~55 tests
 
 ### Phase 2: Services + Core Bricks (Week 3-4)
-- Tests: `namespace/*`, `agent/*`, `scheduler/*`, `eventlog/*`, `sync/*`, `mount/*`, `upload/*`, `rebac/*`, `memory/*`, `search/*`, `pay/*`
-- Data: `benchmarks/herb/enterprise-context/`
+- Tests: `namespace/*`, `agent/*`, `scheduler/*`, `eventlog/*`, `sync/*`, `mount/*`, `upload/*`, `rebac/*`, `memory/001-019,022-023`, `search/*`, `pay/*`
+- Data: `benchmarks/herb/enterprise-context/`, `benchmarks/memory/longmemeval/`, `benchmarks/memory/locomo/`, `benchmarks/memory/memoryagentbench/`, `benchmarks/memory/tofu/`
 - Infra: `docker compose -f dockerfiles/docker-compose.demo.yml up -d` (includes PostgreSQL + Dragonfly)
-- Count: ~90 tests
+- Count: ~100 tests
+- Note: memory/020-021 (perf benchmarks) deferred to Phase 5
 
 ### Phase 3: All Bricks + Dynamic Management (Week 5-6)
 - Tests: `llm/*`, `mcp/*`, `sandbox/*`, `snapshot/*`, `skills/*`, `governance/*`, `reputation/*`, `delegation/*`, `workflow/*`, `ipc/*`, `watch/*`, `cache/*`, `versioning/*`, `locks/*`, `audit/*`, `a2a/*`, `discovery/*`, `manifest/*`, `playbook/*`, `trajectory/*`, `feedback/*`, `graph/*`, `batch/*`, `async/*`, `stream/*`, `conflict/*`, `credential/*`, `brick/*`, `storage/*`, `obs/*`, `cli/003-020`, `contract/003-006`
@@ -913,12 +960,13 @@ docker network connect nexus_nexus-network nexus-witness
 - Count: ~45 tests
 
 ### Phase 5: Production Readiness (Week 9-10)
-- Tests: `stress/*`, `slo/*`, `security/*`, `property/*`, `upgrade/*`
-- Data: Full `benchmarks/performance/` dataset (50K files)
+- Tests: `stress/*`, `slo/*`, `security/*`, `property/*`, `upgrade/*`, `memory/020`, `memory/021`
+- Data: Full `benchmarks/performance/` dataset (50K files), `benchmarks/memory/ultradomain/`, `benchmarks/memory/graphrag-bench/`
 - Infra: Both `demo.yml` (standalone) and `cross-platform-test.yml` (federation)
-- Count: ~45 tests
+- Count: ~47 tests
+- Note: memory/020 (write + consolidation latency) and memory/021 (context saturation baseline) require full perf harness
 
-### Grand Total: ~355 tests
+### Grand Total: ~367 tests
 
 ---
 

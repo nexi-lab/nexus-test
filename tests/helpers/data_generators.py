@@ -4,10 +4,15 @@ Provides utilities for:
     - Generating file trees of configurable depth/breadth
     - Loading benchmark data files from disk
     - Seeding a zone with test data for performance/stress tests
+    - Collecting operation latencies for performance benchmarks
 """
 
 from __future__ import annotations
 
+import statistics
+import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,6 +43,70 @@ class SeedResult:
     files_seeded: int
     zones_seeded: list[str]
     errors: list[str]
+
+
+@dataclass(frozen=True)
+class LatencyStats:
+    """Percentile latency statistics (immutable)."""
+
+    count: int
+    min_ms: float
+    max_ms: float
+    p50_ms: float
+    p95_ms: float
+    p99_ms: float
+    mean_ms: float
+
+
+class LatencyCollector:
+    """Collect operation latencies via context manager.
+
+    Usage:
+        collector = LatencyCollector("memory_write")
+        for _ in range(100):
+            with collector.measure():
+                do_operation()
+        stats = collector.stats()
+        assert stats.p95_ms < 50
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._samples_ns: list[int] = []
+
+    @contextmanager
+    def measure(self) -> Generator[None, None, None]:
+        """Time a single operation using perf_counter_ns."""
+        start = time.perf_counter_ns()
+        yield
+        self._samples_ns.append(time.perf_counter_ns() - start)
+
+    def stats(self) -> LatencyStats:
+        """Compute percentile statistics from collected samples.
+
+        Raises:
+            ValueError: If no samples have been collected.
+        """
+        if not self._samples_ns:
+            raise ValueError(f"LatencyCollector({self.name!r}): no samples collected")
+
+        ms = [ns / 1_000_000 for ns in self._samples_ns]
+        sorted_ms = sorted(ms)
+        n = len(sorted_ms)
+
+        def _percentile(pct: float) -> float:
+            idx = int(pct / 100 * (n - 1))
+            return sorted_ms[min(idx, n - 1)]
+
+        return LatencyStats(
+            count=n,
+            min_ms=sorted_ms[0],
+            max_ms=sorted_ms[-1],
+            p50_ms=_percentile(50),
+            p95_ms=_percentile(95),
+            p99_ms=_percentile(99),
+            mean_ms=statistics.mean(ms),
+        )
 
 
 # ---------------------------------------------------------------------------
