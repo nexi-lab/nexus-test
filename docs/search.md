@@ -6,7 +6,7 @@
 
 Nexus implements a multi-modal search system with 5 search modalities, adaptive
 query routing, and LightRAG-style graph-enhanced retrieval. The system supports
-code search (Zoekt), ranked text search (BM25S), semantic search (pgvector),
+trigram search (Zoekt), ranked text search (BM25S), semantic search (pgvector),
 and LLM-powered query expansion.
 
 ```text
@@ -30,7 +30,7 @@ and LLM-powered query expansion.
     v               v                v
   +--------+  +----------+  +------------------+
   | BM25S  |  | pgvector |  | Zoekt            |
-  | Keyword|  | Semantic |  | Code Search      |
+  | Keyword|  | Semantic |  | Trigram Search   |
   +--------+  +----------+  +------------------+
     |               |                |
     v               v                v
@@ -192,11 +192,15 @@ class RoutingConfig:
 
 ---
 
-## Zoekt Code Search
+## Zoekt Trigram Search
 
 **File**: `nexus/search/zoekt_client.py` (543 lines)
 
-Sub-50ms trigram-based code search via external Zoekt server.
+Sub-50ms trigram-based search via external Zoekt server. Although Zoekt
+originated as a code search engine (Google/Sourcegraph), Nexus uses it as a
+**general-purpose trigram index** for ALL stored content. Every CAS write
+triggers a Zoekt reindex via `on_write_callback` in the storage backend
+(`backends/local.py:302`), so files, memories, and documents are all indexed.
 
 **Configuration**:
 ```python
@@ -801,7 +805,7 @@ Each level is optional and gracefully falls through to the next.
 | `bm25s_search.py` | 851 | BM25S fast ranked text search |
 | `embeddings.py` | 740 | Embedding providers (OpenAI, Voyage) |
 | `graph_retrieval.py` | 721 | LightRAG dual-level retrieval |
-| `zoekt_client.py` | 543 | Zoekt code search client |
+| `zoekt_client.py` | 543 | Zoekt trigram search client |
 | `indexing.py` | 467 | Parallel indexing pipeline |
 | `contextual_chunking.py` | 428 | Anthropic contextual retrieval |
 | `vector_db.py` | 427 | Vector database facade |
