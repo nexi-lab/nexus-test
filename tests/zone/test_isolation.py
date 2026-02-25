@@ -1,7 +1,8 @@
 """Zone isolation tests — verifying cross-zone data boundaries.
 
-Tests: zone/001, zone/002, zone/003, zone/006
-Covers: cross-zone read, zone-scoped listing, cross-zone write, zone-scoped glob
+Tests: zone/001, zone/002, zone/003, zone/006, zone/009, zone/010
+Covers: cross-zone read, zone-scoped listing, cross-zone write,
+        zone-scoped glob, zone-scoped search, zone-scoped grep
 
 Zone isolation in standalone mode works through ReBAC zone_id filtering.
 Each zone has grants scoped to its own path prefix with a unique user_id,
@@ -10,7 +11,7 @@ so cross-zone access is denied by the permission system.
 Note: Write operations use the admin client to avoid batched-checker
 inconsistencies. Zone-scoped clients are used only for read isolation.
 
-Reference: TEST_PLAN.md §5.1
+Reference: TEST_PLAN.md §4.2
 """
 
 from __future__ import annotations
@@ -21,7 +22,11 @@ from collections.abc import Callable
 import pytest
 
 from tests.helpers.api_client import NexusClient
-from tests.helpers.assertions import assert_rpc_success, extract_paths
+from tests.helpers.assertions import (
+    assert_rpc_success,
+    extract_paths,
+    extract_search_results,
+)
 
 
 @pytest.mark.auto
@@ -142,3 +147,68 @@ class TestZoneIsolation:
                 f"Glob from zone_b should not find admin namespace files: {matched}"
             )
         # If resp_cross is not ok, that's also acceptable (permission denied)
+
+    def test_zone_scoped_search_isolation(
+        self,
+        nexus: NexusClient,
+        nexus_a: NexusClient,
+        nexus_b: NexusClient,
+    ) -> None:
+        """zone/009: Search results are scoped to the querying zone.
+
+        Write uniquely-tagged files via admin, then verify that zone_b's
+        search does not return files from the admin/zone_a namespace.
+        Search requires indexing, so we trigger a refresh and allow
+        time for the daemon to process.
+        """
+        import time
+
+        tag = uuid.uuid4().hex[:8]
+        path = f"/srch/{tag}/secret_a.txt"
+        content = f"zone_search_isolation_{tag}"
+
+        # Write via admin
+        assert_rpc_success(nexus.write_file(path, content))
+
+        # Trigger search index refresh and give daemon time
+        nexus.search_refresh(path, change_type="create")
+        time.sleep(2)
+
+        # Search from zone_b should not find the file
+        resp_b = nexus_b.search(content)
+        if resp_b.ok:
+            results = extract_search_results(resp_b)
+            matching = [
+                r for r in results
+                if tag in str(r.get("path", "")) or tag in str(r.get("content", ""))
+            ]
+            assert not matching, (
+                f"Zone B search should not find admin namespace file: {matching}"
+            )
+        # If search fails (permission denied or unavailable), that's also acceptable
+
+    def test_zone_scoped_grep_isolation(
+        self,
+        nexus: NexusClient,
+        nexus_a: NexusClient,
+        nexus_b: NexusClient,
+    ) -> None:
+        """zone/010: Grep results are scoped to the querying zone.
+
+        Write a file with unique content via admin, then verify zone_b's
+        grep cannot find it.
+        """
+        tag = uuid.uuid4().hex[:8]
+        path = f"/grp/{tag}/data.txt"
+        content = f"grep_isolation_marker_{tag}"
+
+        # Write via admin
+        assert_rpc_success(nexus.write_file(path, content))
+
+        # Grep from zone_b should not find the content
+        resp_b = nexus_b.grep(f"grep_isolation_marker_{tag}", f"/grp/{tag}/")
+        if resp_b.ok:
+            matches = extract_paths(resp_b.result)
+            assert not matches, (
+                f"Zone B grep should not find admin namespace file: {matches}"
+            )

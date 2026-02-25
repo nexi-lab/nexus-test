@@ -267,6 +267,12 @@ Test IDs follow `nxfs/{feature}/{NNN}` (e.g., `nxfs/kernel/001`).
 | zone/004 | Zone creation | auto,zone | New zone operational |
 | zone/005 | Zone deletion + cleanup | auto,zone | All data purged |
 | zone/006 | Zone-scoped glob | auto,zone | Results from target zone only |
+| zone/007 | Zone listing API | auto,zone | Admin sees all zones, returns valid list |
+| zone/008 | Get zone details | auto,zone | Zone info returned with correct fields |
+| zone/009 | Zone-scoped search isolation | auto,zone,search | Search results only from target zone |
+| zone/010 | Zone-scoped grep isolation | auto,zone,kernel | Grep results only from target zone |
+| zone/011 | Deleted zone read fails cleanly | auto,zone | 4xx error, not 500 |
+| zone/012 | Invalid zone ID rejected | auto,zone,security | Injection/traversal patterns rejected |
 
 ### 4.3 — VFS Hooks
 

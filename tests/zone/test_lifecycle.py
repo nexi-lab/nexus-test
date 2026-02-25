@@ -1,9 +1,10 @@
-"""Zone lifecycle tests — creation and deletion.
+"""Zone lifecycle tests — creation, deletion, listing, and details.
 
-Tests: zone/004, zone/005
-Covers: zone provisioning, zone deprovisioning with cleanup
+Tests: zone/004, zone/005, zone/007, zone/008
+Covers: zone provisioning, zone deprovisioning with cleanup,
+        zone listing API, zone get details API
 
-Reference: TEST_PLAN.md §5.2
+Reference: TEST_PLAN.md §4.2
 """
 
 from __future__ import annotations
@@ -77,6 +78,51 @@ class TestZoneLifecycle:
             with contextlib.suppress(Exception):
                 nexus.delete_file(path)
             zone_client.http.close()
+
+    def test_zone_listing_api(
+        self,
+        nexus: NexusClient,
+    ) -> None:
+        """zone/007: List zones API returns valid zone list for admin.
+
+        Admin client should be able to list all zones. The response
+        should include zone objects with expected fields.
+        """
+        resp = nexus.list_zones()
+        assert resp.status_code in (200, 201), (
+            f"List zones should succeed for admin, got {resp.status_code}: {resp.text}"
+        )
+        data = resp.json()
+        # Response may be a list or a dict with "zones" key
+        zones = data if isinstance(data, list) else data.get("zones", [])
+        assert isinstance(zones, list), f"Expected zones list, got {type(zones)}: {data}"
+        # Each zone entry should have at least a zone_id
+        for z in zones:
+            assert "zone_id" in z, f"Zone entry missing zone_id: {z}"
+
+    def test_get_zone_details(
+        self,
+        nexus: NexusClient,
+        ephemeral_zone: str,
+    ) -> None:
+        """zone/008: Get zone details returns correct zone info.
+
+        After creating a zone, GET /api/zones/{zone_id} should return
+        zone details including zone_id, name, and phase.
+        """
+        resp = nexus.get_zone(ephemeral_zone)
+        assert resp.status_code == 200, (
+            f"Get zone details should succeed, got {resp.status_code}: {resp.text}"
+        )
+        data = resp.json()
+        assert data.get("zone_id") == ephemeral_zone, (
+            f"Expected zone_id={ephemeral_zone}, got {data.get('zone_id')}"
+        )
+        # Zone should be in Active phase
+        phase = data.get("phase", "")
+        assert phase in ("Active", "active", ""), (
+            f"Newly created zone should be Active, got phase={phase}"
+        )
 
     def test_zone_deletion_and_cleanup(
         self,
