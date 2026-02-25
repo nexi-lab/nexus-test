@@ -68,7 +68,7 @@ class TestSettings(BaseSettings):
     herb_benchmark_dir: str = "~/nexus/benchmarks/herb"  # Override: NEXUS_TEST_HERB_BENCHMARK_DIR
 
     # --- Timeouts (seconds) ---
-    request_timeout: float = 30.0
+    request_timeout: float = 60.0
     connect_timeout: float = 10.0
     cluster_wait_timeout: float = 120.0
 

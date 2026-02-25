@@ -1,17 +1,23 @@
-"""Search test fixtures — enforcement gates, indexed files, ReBAC setup.
+"""Search test fixtures — enforcement gates, indexed files, HERB data, ReBAC setup.
 
 Fixture scoping:
     module:  _search_available (auto-skip gate), _semantic_available, _zoekt_available,
              indexed_files (diverse test data), search_zone
-    function: rebac_search_clients (per-test ReBAC isolation)
+    class:   seeded_search_files (HERB enterprise context)
+    function: make_searchable_file (factory with cleanup),
+              rebac_search_clients (per-test ReBAC isolation)
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
+import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -19,7 +25,7 @@ from tenacity import retry, stop_after_delay, wait_exponential
 
 from tests.config import TestSettings
 from tests.helpers.api_client import NexusClient
-from tests.helpers.assertions import extract_search_results
+from tests.helpers.assertions import extract_search_results as _extract_search_results
 from tests.helpers.data_generators import seed_search_files
 from tests.helpers.zone_keys import create_zone_key, grant_zone_permission
 
@@ -172,7 +178,6 @@ def _semantic_available(nexus: NexusClient) -> None:
     Checks search health for db_pool_ready and probes semantic mode.
     Used by search/002, 006.
     """
-    # Semantic search requires the DB pool for pgvector queries
     try:
         health_resp = nexus.search_health()
         if health_resp.status_code == 200:
@@ -248,7 +253,7 @@ def wait_until_searchable(
                 logger.debug("search_refresh failed during poll (non-fatal)", exc_info=True)
         resp = nexus.search(query, limit=20)
         assert resp.ok, f"Search probe failed: {resp.error}"
-        results = extract_search_results(resp)
+        results = _extract_search_results(resp)
         if expected_path:
             paths = [
                 r.get("path", r.get("file_path", ""))
@@ -311,6 +316,172 @@ def indexed_files(
 
 
 # ---------------------------------------------------------------------------
+# HERB enterprise-context data loader
+# ---------------------------------------------------------------------------
+
+HERB_DATA_DIR = (
+    Path(__file__).resolve().parent.parent.parent
+    / "benchmarks"
+    / "herb"
+    / "enterprise-context"
+)
+
+HERB_QA_DIR = (
+    Path(__file__).resolve().parent.parent.parent
+    / "benchmarks"
+    / "herb"
+    / "qa"
+)
+
+
+def load_herb_context(max_records: int = 50) -> list[dict[str, Any]]:
+    """Load HERB enterprise-context records from JSONL files."""
+    records: list[dict[str, Any]] = []
+    for jsonl_file in sorted(HERB_DATA_DIR.glob("*.jsonl")):
+        with jsonl_file.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+                    if len(records) >= max_records:
+                        return records
+    return records
+
+
+def load_herb_qa() -> list[dict[str, Any]]:
+    """Load HERB Q&A benchmark data from JSONL files.
+
+    Returns empty list if QA directory doesn't exist.
+    """
+    if not HERB_QA_DIR.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for jsonl_file in sorted(HERB_QA_DIR.glob("*.jsonl")):
+        with jsonl_file.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+    return records
+
+
+def _file_content_from_record(record: dict[str, Any]) -> str:
+    """Convert a HERB record into file content for search indexing."""
+    parts: list[str] = []
+    name = record.get("name", record.get("company", ""))
+    if name:
+        parts.append(f"# {name}")
+    for key in ("department", "role", "category", "industry", "description"):
+        val = record.get(key)
+        if val:
+            parts.append(f"{key}: {val}")
+    for list_key in ("skills", "features", "products_used"):
+        items = record.get(list_key, [])
+        if items:
+            parts.append(f"{list_key}: {', '.join(str(i) for i in items)}")
+    if not parts:
+        parts.append(json.dumps(record, indent=2))
+    return "\n".join(parts)
+
+
+@pytest.fixture(scope="class")
+def seeded_search_files(
+    nexus: NexusClient,
+) -> Generator[list[dict[str, Any]], None, None]:
+    """Seed HERB enterprise-context records as NexusFS files.
+
+    Returns list of dicts with 'path' and 'content' keys.
+    Cleaned up after the class completes.
+    """
+    records = load_herb_context(max_records=30)
+    if not records:
+        pytest.skip("HERB enterprise-context data not found")
+
+    tag = uuid.uuid4().hex[:8]
+    base_path = f"/test-search/{tag}"
+    seeded: list[dict[str, Any]] = []
+
+    for i, record in enumerate(records):
+        content = _file_content_from_record(record)
+        name = record.get("name", record.get("company", f"record_{i}"))
+        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(name))
+        path = f"{base_path}/{safe_name}.md"
+        resp = nexus.write_file(path, content)
+        if resp.ok:
+            seeded.append({"path": path, "content": content, "record": record})
+
+    # Trigger index refresh for the base path
+    nexus.search_refresh(base_path)
+    time.sleep(3)
+
+    yield seeded
+
+    # Cleanup
+    for entry in reversed(seeded):
+        with contextlib.suppress(Exception):
+            nexus.delete_file(entry["path"])
+    with contextlib.suppress(Exception):
+        nexus.rmdir(base_path, recursive=True)
+
+
+@pytest.fixture
+def make_searchable_file(
+    nexus: NexusClient,
+) -> Generator[Callable[[str, str], str], None, None]:
+    """Factory: create a file and trigger search index refresh.
+
+    Returns the file path. Files are cleaned up after the test.
+    """
+    tag = uuid.uuid4().hex[:8]
+    base_path = f"/test-search/{tag}"
+    created: list[str] = []
+
+    def _make(name: str, content: str) -> str:
+        path = f"{base_path}/{name}"
+        resp = nexus.write_file(path, content)
+        assert resp.ok, f"Failed to write {path}: {resp.error}"
+        created.append(path)
+        nexus.search_refresh(path)
+        return path
+
+    yield _make
+
+    for path in reversed(created):
+        with contextlib.suppress(Exception):
+            nexus.delete_file(path)
+    with contextlib.suppress(Exception):
+        nexus.rmdir(base_path, recursive=True)
+
+
+# ---------------------------------------------------------------------------
+# Search result helpers (backward-compatible re-exports)
+# ---------------------------------------------------------------------------
+
+
+def extract_search_results(resp: Any) -> list[dict[str, Any]]:
+    """Extract results list from a search query response.
+
+    Handles both httpx.Response (from search_query) and RpcResponse (from search).
+    """
+    if hasattr(resp, "json"):
+        data = resp.json()
+    elif hasattr(resp, "result"):
+        data = resp.result
+    else:
+        data = resp
+    if isinstance(data, dict):
+        return data.get("results", data.get("matches", []))
+    if isinstance(data, list):
+        return data
+    return []
+
+
+def search_result_paths(resp: Any) -> list[str]:
+    """Extract just the file paths from search results."""
+    return [r.get("path", "") for r in extract_search_results(resp)]
+
+
+# ---------------------------------------------------------------------------
 # ReBAC fixtures for permission-filtered search
 # ---------------------------------------------------------------------------
 
@@ -327,11 +498,6 @@ def rebac_search_clients(
     """
     import os
 
-    # ReBAC search filtering only works when permissions are enforced.
-    # Quick check: search with the denied client should see fewer results.
-    # If the server doesn't enforce permissions, skip early.
-
-    # Ensure zone_keys helpers can find the database URL
     if settings.database_url and not os.environ.get("NEXUS_DATABASE_URL"):
         os.environ["NEXUS_DATABASE_URL"] = settings.database_url
 
@@ -339,12 +505,10 @@ def rebac_search_clients(
     viewer_user = f"search-viewer-{uuid.uuid4().hex[:8]}"
     denied_user = f"search-denied-{uuid.uuid4().hex[:8]}"
 
-    # Split files into granted and denied halves
     mid = len(indexed_files) // 2
     granted_paths = [f["path"] for f in indexed_files[:mid]]
     denied_paths = [f["path"] for f in indexed_files[mid:]]
 
-    # Create zone keys
     try:
         viewer_key = create_zone_key(
             nexus, zone, name=f"viewer-{viewer_user}", user_id=viewer_user
@@ -355,11 +519,9 @@ def rebac_search_clients(
     except (RuntimeError, ConnectionError) as exc:
         pytest.skip(f"Cannot create zone keys for ReBAC test: {exc}")
 
-    # Grant viewer permission on first half, track tuple IDs for cleanup
     grant_tuple_ids: list[str] = []
     for path in granted_paths:
         grant_zone_permission(zone, viewer_user, path, relation="direct_viewer")
-        # Look up the tuple ID we just created for cleanup
         with contextlib.suppress(Exception):
             tuples_resp = nexus.rebac_list_tuples(
                 subject=["user", viewer_user],
@@ -376,12 +538,10 @@ def rebac_search_clients(
 
     yield viewer_client, denied_client, granted_paths, denied_paths
 
-    # Cleanup: revoke ReBAC grants
     for tid in grant_tuple_ids:
         with contextlib.suppress(Exception):
             nexus.rebac_delete(tid)
 
-    # Cleanup: close HTTP sessions
     with contextlib.suppress(Exception):
         viewer_client.http.close()
     with contextlib.suppress(Exception):

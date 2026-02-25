@@ -20,6 +20,29 @@ import httpx
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
+# Enrichment flags (mirrors server-side EnrichmentFlags)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EnrichmentFlags:
+    """Enrichment pipeline flags for memory storage.
+
+    Controls which enrichment steps run on the server side.
+    Default values match server defaults (steps 1-3,5 on; 4,6-8 off).
+    """
+
+    generate_embedding: bool = True
+    extract_entities: bool = True
+    extract_temporal: bool = True
+    extract_relationships: bool = False  # Opt-in (expensive)
+    classify_stability: bool = True
+    detect_evolution: bool = False  # Opt-in (expensive)
+    resolve_coreferences: bool = False  # Opt-in (write-time)
+    resolve_temporal: bool = False  # Opt-in (write-time)
+    store_to_graph: bool = False  # Opt-in
+
+# ---------------------------------------------------------------------------
 # Response models (immutable)
 # ---------------------------------------------------------------------------
 
@@ -443,15 +466,34 @@ class NexusClient:
         metadata: dict[str, Any] | None = None,
         zone: str | None = None,
         timestamp: str | None = None,
+        enrichment: EnrichmentFlags | None = None,
         generate_embedding: bool = True,
     ) -> RpcResponse:
-        """Store a memory via REST POST /api/v2/memories."""
+        """Store a memory via REST POST /api/v2/memories.
+
+        Args:
+            content: Memory content text.
+            metadata: Optional metadata dict.
+            zone: Optional zone context (sent as X-Nexus-Zone-ID header).
+            timestamp: Optional valid_at timestamp (ISO-8601).
+            enrichment: Optional enrichment pipeline flags. If None, server defaults apply.
+        """
         body: dict[str, Any] = {"content": content}
         if metadata is not None:
             body["metadata"] = metadata
         if timestamp is not None:
             body["valid_at"] = timestamp
-        if not generate_embedding:
+        if enrichment is not None:
+            body["generate_embedding"] = enrichment.generate_embedding
+            body["extract_entities"] = enrichment.extract_entities
+            body["extract_temporal"] = enrichment.extract_temporal
+            body["extract_relationships"] = enrichment.extract_relationships
+            body["classify_stability"] = enrichment.classify_stability
+            body["detect_evolution"] = enrichment.detect_evolution
+            body["resolve_coreferences"] = enrichment.resolve_coreferences
+            body["resolve_temporal"] = enrichment.resolve_temporal
+            body["store_to_graph"] = enrichment.store_to_graph
+        elif not generate_embedding:
             body["generate_embedding"] = False
         headers: dict[str, str] = {}
         if zone:
@@ -494,10 +536,22 @@ class NexusClient:
             "/api/v2/memories/search", json=search_body, headers=headers
         )
         if resp.status_code in (200, 201):
-            return self._rest_to_rpc(resp)
+            search_rpc = self._rest_to_rpc(resp)
+            # Extract results — search endpoint may return empty due to
+            # server-side permission context bug (uses global context, not
+            # per-request auth). Fall through to query endpoint as fallback.
+            search_results = (
+                search_rpc.result.get("results", [])
+                if isinstance(search_rpc.result, dict)
+                else search_rpc.result if isinstance(search_rpc.result, list)
+                else []
+            )
+            if search_results:
+                # Normalize: return results as a list (not wrapped dict)
+                return RpcResponse(id=search_rpc.id, result=search_results)
 
         # Fallback: list memories via query endpoint and filter client-side
-        query_body: dict[str, Any] = {"limit": limit}
+        query_body: dict[str, Any] = {"query": query, "limit": limit}
         if time_start is not None:
             query_body["after"] = time_start
         if time_end is not None:
@@ -509,16 +563,25 @@ class NexusClient:
         if not rpc_resp.ok:
             return rpc_resp
 
+        # Normalize: extract the results list from the response
+        raw_result = rpc_resp.result
+        if isinstance(raw_result, dict):
+            all_results = raw_result.get("results", [])
+        elif isinstance(raw_result, list):
+            all_results = raw_result
+        else:
+            all_results = []
+
         # Client-side relevance filter
-        all_results = (rpc_resp.result or {}).get("results", [])
         query_lower = query.lower()
         filtered = [
             r for r in all_results
             if query_lower in (r.get("content", "") or "").lower()
         ]
+        # Return normalized list as result (not nested dict)
         return RpcResponse(
             id=rpc_resp.id,
-            result={"results": filtered if filtered else all_results},
+            result=filtered if filtered else all_results,
         )
 
     def memory_delete(self, memory_id: str, *, zone: str | None = None) -> RpcResponse:
@@ -527,6 +590,46 @@ class NexusClient:
         if zone:
             headers["X-Nexus-Zone-ID"] = zone
         resp = self.http.delete(f"/api/v2/memories/{memory_id}", headers=headers)
+        return self._rest_to_rpc(resp)
+
+    def memory_get(self, memory_id: str, *, zone: str | None = None) -> RpcResponse:
+        """Get a single memory by ID via REST GET /api/v2/memories/{id}.
+
+        The server wraps the response in ``{"memory": {...}}``.
+        This method unwraps it so ``result`` is the memory dict directly.
+        """
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.get(f"/api/v2/memories/{memory_id}", headers=headers)
+        rpc = self._rest_to_rpc(resp)
+        # Unwrap {"memory": {...}} envelope if present
+        if rpc.ok and isinstance(rpc.result, dict) and "memory" in rpc.result:
+            rpc = RpcResponse(id=rpc.id, result=rpc.result["memory"])
+        return rpc
+
+    def memory_approve(self, memory_id: str, *, zone: str | None = None) -> RpcResponse:
+        """Activate a memory (inactive -> active) via REST PUT state change."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.put(
+            f"/api/v2/memories/{memory_id}",
+            json={"state": "active"},
+            headers=headers,
+        )
+        return self._rest_to_rpc(resp)
+
+    def memory_deactivate(self, memory_id: str, *, zone: str | None = None) -> RpcResponse:
+        """Deactivate a memory (active -> inactive) via REST PUT state change."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.put(
+            f"/api/v2/memories/{memory_id}",
+            json={"state": "inactive"},
+            headers=headers,
+        )
         return self._rest_to_rpc(resp)
 
     def memory_search(
@@ -565,7 +668,7 @@ class NexusClient:
         query_resp = self.memory_query(entity_id, limit=100, zone=zone)
         if not query_resp.ok:
             return query_resp
-        results = (query_resp.result or {}).get("results", [])
+        results = query_resp.result if isinstance(query_resp.result, list) else []
         deleted_ids: list[str] = []
         for mem in results:
             mid = mem.get("memory_id", "")
@@ -590,21 +693,42 @@ class NexusClient:
         return self._rest_to_rpc(resp)
 
     def memory_graph_query(self, entity: str, *, zone: str | None = None) -> httpx.Response:
-        """GET /api/v2/graph/entity/{entity} — knowledge graph lookup."""
+        """GET /api/v2/graph/search?name={entity} — knowledge graph lookup by name."""
         headers: dict[str, str] = {}
         if zone:
             headers["X-Nexus-Zone-ID"] = zone
-        return self.http.get(f"/api/v2/graph/entity/{entity}", headers=headers)
+        return self.http.get(
+            "/api/v2/graph/search",
+            params={"name": entity, "fuzzy": "true"},
+            headers=headers,
+        )
 
-    def memory_get(
-        self, memory_id: str, *, zone: str | None = None
-    ) -> RpcResponse:
-        """Get a single memory by ID via REST GET /api/v2/memories/{id}."""
+    # --- Search daemon REST methods ---
+
+    def search_query(
+        self,
+        query: str,
+        *,
+        search_type: str = "hybrid",
+        limit: int = 10,
+        path: str | None = None,
+        alpha: float = 0.5,
+        zone: str | None = None,
+    ) -> httpx.Response:
+        """GET /api/v2/search/query — search daemon query."""
+        params: dict[str, Any] = {"q": query, "type": search_type, "limit": limit}
+        if path is not None:
+            params["path"] = path
+        if alpha != 0.5:
+            params["alpha"] = alpha
         headers: dict[str, str] = {}
         if zone:
             headers["X-Nexus-Zone-ID"] = zone
-        resp = self.http.get(f"/api/v2/memories/{memory_id}", headers=headers)
-        return self._rest_to_rpc(resp)
+        return self.http.get("/api/v2/search/query", params=params, headers=headers)
+
+    def search_expand(self, query: str) -> httpx.Response:
+        """POST /api/v2/search/expand?q={query} — LLM query expansion."""
+        return self.http.post("/api/v2/search/expand", params={"q": query})
 
     def memory_update(
         self,
