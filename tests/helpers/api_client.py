@@ -410,6 +410,189 @@ class NexusClient:
             params["zone_id"] = zone_id
         return self.rpc("rebac_list_objects", params)
 
+    # --- Memory REST methods ---
+
+    def _rest_to_rpc(
+        self, resp: httpx.Response, *, request_id: int = 0
+    ) -> RpcResponse:
+        """Convert an httpx.Response into an RpcResponse envelope."""
+        if resp.status_code in (200, 201):
+            try:
+                data = resp.json()
+            except Exception:
+                data = resp.text
+            return RpcResponse(id=request_id, result=data)
+        detail = ""
+        try:
+            data = resp.json()
+            detail = data.get("detail", data.get("message", str(data)))
+        except (ValueError, KeyError):
+            detail = resp.text
+        return RpcResponse(
+            id=request_id,
+            error=RpcError(
+                code=-resp.status_code,
+                message=f"HTTP {resp.status_code}: {detail}",
+            ),
+        )
+
+    def memory_store(
+        self,
+        content: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        zone: str | None = None,
+        timestamp: str | None = None,
+    ) -> RpcResponse:
+        """Store a memory via REST POST /api/v2/memories."""
+        body: dict[str, Any] = {"content": content}
+        if metadata is not None:
+            body["metadata"] = metadata
+        if timestamp is not None:
+            body["valid_at"] = timestamp
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.post("/api/v2/memories", json=body, headers=headers)
+        result = self._rest_to_rpc(resp)
+        # Normalise: ensure result dict always has 'memory_id' key
+        if result.ok and isinstance(result.result, dict):
+            result = RpcResponse(
+                id=result.id,
+                result={"memory_id": result.result.get("memory_id"), **result.result},
+            )
+        return result
+
+    def memory_query(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        zone: str | None = None,
+        time_start: str | None = None,
+        time_end: str | None = None,
+    ) -> RpcResponse:
+        """Query memories via REST POST /api/v2/memories/query.
+
+        Falls back to listing + client-side filter when the semantic
+        search endpoint is unavailable.
+        """
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+
+        # Try semantic search first
+        search_body: dict[str, Any] = {"query": query, "limit": limit}
+        if time_start is not None:
+            search_body["after"] = time_start
+        if time_end is not None:
+            search_body["before"] = time_end
+        resp = self.http.post(
+            "/api/v2/memories/search", json=search_body, headers=headers
+        )
+        if resp.status_code in (200, 201):
+            return self._rest_to_rpc(resp)
+
+        # Fallback: list memories via query endpoint and filter client-side
+        query_body: dict[str, Any] = {"limit": limit}
+        if time_start is not None:
+            query_body["after"] = time_start
+        if time_end is not None:
+            query_body["before"] = time_end
+        resp = self.http.post(
+            "/api/v2/memories/query", json=query_body, headers=headers
+        )
+        rpc_resp = self._rest_to_rpc(resp)
+        if not rpc_resp.ok:
+            return rpc_resp
+
+        # Client-side relevance filter
+        all_results = (rpc_resp.result or {}).get("results", [])
+        query_lower = query.lower()
+        filtered = [
+            r for r in all_results
+            if query_lower in (r.get("content", "") or "").lower()
+        ]
+        return RpcResponse(
+            id=rpc_resp.id,
+            result={"results": filtered if filtered else all_results},
+        )
+
+    def memory_delete(self, memory_id: str, *, zone: str | None = None) -> RpcResponse:
+        """Delete a memory via REST DELETE /api/v2/memories/{id}."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.delete(f"/api/v2/memories/{memory_id}", headers=headers)
+        return self._rest_to_rpc(resp)
+
+    def memory_search(
+        self,
+        query: str,
+        *,
+        semantic: bool = True,
+        zone: str | None = None,
+    ) -> RpcResponse:
+        """Search memories via REST POST /api/v2/memories/search."""
+        body: dict[str, Any] = {"query": query}
+        if not semantic:
+            body["search_mode"] = "keyword"
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.post("/api/v2/memories/search", json=body, headers=headers)
+        return self._rest_to_rpc(resp)
+
+    def memory_consolidate(self, *, zone: str | None = None) -> RpcResponse:
+        """Trigger memory consolidation via REST POST /api/v2/consolidate."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.post("/api/v2/consolidate", json={}, headers=headers)
+        return self._rest_to_rpc(resp)
+
+    def memory_forget_entity(
+        self, entity_id: str, *, zone: str | None = None
+    ) -> RpcResponse:
+        """Forget all memories related to an entity (GDPR-style purge).
+
+        Deletes all memories whose content mentions the entity.
+        """
+        # Query for memories mentioning this entity, then delete each
+        query_resp = self.memory_query(entity_id, limit=100, zone=zone)
+        if not query_resp.ok:
+            return query_resp
+        results = (query_resp.result or {}).get("results", [])
+        deleted_ids: list[str] = []
+        for mem in results:
+            mid = mem.get("memory_id", "")
+            if mid:
+                del_resp = self.memory_delete(mid, zone=zone)
+                if del_resp.ok:
+                    deleted_ids.append(mid)
+        return RpcResponse(
+            result={"deleted_count": len(deleted_ids), "deleted_ids": deleted_ids},
+        )
+
+    def memory_get_versions(
+        self, memory_id: str, *, zone: str | None = None
+    ) -> RpcResponse:
+        """Get version history for a memory via REST GET /api/v2/memories/{id}/history."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.get(
+            f"/api/v2/memories/{memory_id}/history", headers=headers
+        )
+        return self._rest_to_rpc(resp)
+
+    def memory_graph_query(self, entity: str, *, zone: str | None = None) -> httpx.Response:
+        """GET /api/v2/graph/entity/{entity} — knowledge graph lookup."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        return self.http.get(f"/api/v2/graph/entity/{entity}", headers=headers)
+
     # --- Zone client factory ---
 
     def for_zone(self, zone_api_key: str) -> NexusClient:

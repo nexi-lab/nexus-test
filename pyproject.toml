@@ -1,7 +1,7 @@
 [project]
 name = "nexus-test"
 version = "0.1.0"
-description = "E2E test suite for Nexus AI Filesystem (~355 tests)"
+description = "E2E test suite for Nexus AI Filesystem (~367 tests)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -109,6 +109,7 @@ markers = [
     "storage: Backend drivers, CAS, caching wrappers",
     "brick: Dynamic brick management",
     "observability: Health checks, metrics, probes",
+    "benchmark: Standardized memory benchmark evaluation (LoCoMo, LongMemEval, TOFU)",
 ]
 
 # Default timeout per test (seconds). Override per-marker in conftest.
