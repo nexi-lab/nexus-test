@@ -593,6 +593,73 @@ class NexusClient:
             headers["X-Nexus-Zone-ID"] = zone
         return self.http.get(f"/api/v2/graph/entity/{entity}", headers=headers)
 
+    # --- Search REST methods ---
+
+    def search(
+        self,
+        query: str,
+        *,
+        path: str | None = None,
+        limit: int = 10,
+        search_mode: str = "hybrid",
+        alpha: float = 0.5,
+        fusion_method: str = "rrf",
+        zone: str | None = None,
+    ) -> RpcResponse:
+        """Search via REST GET /api/v2/search/query."""
+        params: dict[str, Any] = {
+            "q": query,
+            "type": search_mode,
+            "limit": limit,
+            "alpha": alpha,
+            "fusion": fusion_method,
+        }
+        if path:
+            params["path"] = path
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.get("/api/v2/search/query", params=params, headers=headers)
+        return self._rest_to_rpc(resp)
+
+    def search_zoekt(
+        self,
+        query: str,
+        *,
+        limit: int = 100,
+        zone: str | None = None,
+    ) -> RpcResponse:
+        """Search via Zoekt trigram index (keyword mode auto-triggers Zoekt)."""
+        return self.search(
+            query, limit=limit, search_mode="keyword", zone=zone,
+        )
+
+    def search_health(self) -> httpx.Response:
+        """GET /api/v2/search/health — search subsystem health."""
+        return self.http.get("/api/v2/search/health")
+
+    def search_stats(self) -> httpx.Response:
+        """GET /api/v2/search/stats — search daemon statistics."""
+        return self.http.get("/api/v2/search/stats")
+
+    def search_refresh(
+        self, path: str, *, change_type: str = "create", zone: str | None = None,
+    ) -> httpx.Response:
+        """POST /api/v2/search/refresh — notify daemon of file change.
+
+        The daemon requires zone-scoped paths (/zone/{zone_id}/...) for indexing.
+        If ``zone`` is provided and the path is not already zone-scoped,
+        the path is automatically prefixed with /zone/{zone}/.
+        """
+        if zone and not path.startswith("/zone/"):
+            if not path.startswith("/"):
+                path = f"/{path}"
+            path = f"/zone/{zone}{path}"
+        return self.http.post(
+            "/api/v2/search/refresh",
+            params={"path": path, "change_type": change_type},
+        )
+
     # --- Zone client factory ---
 
     def for_zone(self, zone_api_key: str) -> NexusClient:

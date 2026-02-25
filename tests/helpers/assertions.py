@@ -333,6 +333,65 @@ def extract_paths(result: Any) -> list[str]:
     return []
 
 
+# --- Search assertions ---
+
+
+def extract_search_results(response: RpcResponse) -> list[dict]:
+    """Extract results list from a search response.
+
+    Handles: list of dicts, dict with "results" key, dict with "matches" key.
+    """
+    results = response.result
+    if isinstance(results, dict):
+        results = results.get("results", results.get("matches", []))
+    if not isinstance(results, list):
+        results = [results] if results else []
+    return results
+
+
+def assert_search_contains(response: RpcResponse, *, path: str) -> dict:
+    """Assert search results contain a file at the given path. Returns the match."""
+    assert response.ok, (
+        f"Expected search success but got error: "
+        f"code={response.error.code}, message={response.error.message}"
+    )
+    results = extract_search_results(response)
+    for item in results:
+        item_path = item.get("path", item.get("file_path", "")) if isinstance(item, dict) else ""
+        if item_path == path or item_path.endswith(path):
+            return item
+
+    found_paths = [
+        r.get("path", r.get("file_path", "?")) for r in results if isinstance(r, dict)
+    ]
+    raise AssertionError(
+        f"Search results do not contain path {path!r}. "
+        f"Got {len(results)} results with paths: {found_paths}"
+    )
+
+
+def assert_search_excludes(response: RpcResponse, *, path: str) -> None:
+    """Assert search results do NOT contain a file at the given path (ReBAC test)."""
+    if not response.ok:
+        return  # Error response trivially excludes everything
+    results = extract_search_results(response)
+    for item in results:
+        item_path = item.get("path", item.get("file_path", "")) if isinstance(item, dict) else ""
+        if item_path == path or item_path.endswith(path):
+            raise AssertionError(
+                f"Search results should NOT contain path {path!r} but it was found"
+            )
+
+
+def assert_search_score_above(result: dict, threshold: float) -> None:
+    """Assert a search result's score meets threshold."""
+    score = result.get("score", result.get("relevance", result.get("rank_score")))
+    assert score is not None, f"Result has no score field: {list(result.keys())}"
+    assert float(score) >= threshold, (
+        f"Search score {score} is below threshold {threshold}"
+    )
+
+
 def parse_prometheus_metric(text: str, metric_name: str) -> dict[str, Any] | None:
     """Parse a single metric from Prometheus text exposition format.
 
