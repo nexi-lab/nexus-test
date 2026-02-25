@@ -15,6 +15,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable, Generator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ import httpx
 import pytest
 
 from tests.helpers.api_client import EnrichmentFlags, NexusClient, RpcResponse
+from tests.helpers.assertions import extract_memory_results
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,144 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 StoreMemoryFn = Callable[..., RpcResponse]
+
+
+# ---------------------------------------------------------------------------
+# Polling helper for search indexing delay
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PollResult:
+    """Result of poll_memory_query with latency tracking."""
+
+    results: list[dict]
+    query_latency_ms: float  # Last successful query round-trip time
+    via_fallback: bool  # True if results came from GET fallback
+
+
+def _get_fallback(
+    nexus: NexusClient,
+    memory_ids: list[str],
+    match_substring: str | None,
+) -> tuple[list[dict], float]:
+    """Fetch memories by ID (direct GET) as fallback when search is slow.
+
+    Returns (results, latency_ms) tuple.
+    """
+    results: list[dict] = []
+    t0 = time.monotonic()
+    for mid in memory_ids:
+        get_resp = nexus.memory_get(mid)
+        if get_resp.ok and isinstance(get_resp.result, dict):
+            mem = get_resp.result.get("memory", get_resp.result)
+            if match_substring is None or match_substring in str(
+                mem.get("content", "")
+            ):
+                results.append(mem)
+    latency_ms = (time.monotonic() - t0) * 1000
+    return results, latency_ms
+
+
+def poll_memory_query(
+    nexus: NexusClient,
+    query: str,
+    *,
+    match_substring: str | None = None,
+    memory_ids: list[str] | None = None,
+    zone: str | None = None,
+    limit: int = 50,
+    timeout: float = 15.0,
+    poll_interval: float = 1.0,
+    get_fallback_after: float = 3.0,
+) -> list[dict]:
+    """Poll memory_query until results contain the expected content.
+
+    Handles search indexing delay by retrying. Falls back to direct
+    memory_get after ``get_fallback_after`` seconds if memory_ids are known.
+
+    Returns:
+        List of matching result dicts. May be empty if nothing found.
+    """
+    pr = poll_memory_query_with_latency(
+        nexus, query,
+        match_substring=match_substring,
+        memory_ids=memory_ids,
+        zone=zone,
+        limit=limit,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        get_fallback_after=get_fallback_after,
+    )
+    return pr.results
+
+
+def poll_memory_query_with_latency(
+    nexus: NexusClient,
+    query: str,
+    *,
+    match_substring: str | None = None,
+    memory_ids: list[str] | None = None,
+    zone: str | None = None,
+    limit: int = 50,
+    timeout: float = 15.0,
+    poll_interval: float = 1.0,
+    get_fallback_after: float = 3.0,
+) -> PollResult:
+    """Poll memory_query until results contain the expected content.
+
+    Like poll_memory_query but returns PollResult with latency info.
+    """
+    start = time.monotonic()
+    deadline = start + timeout
+    results: list[dict] = []
+    fallback_tried = False
+    last_query_latency_ms = 0.0
+
+    while time.monotonic() < deadline:
+        q0 = time.monotonic()
+        resp = nexus.memory_query(query, limit=limit, zone=zone)
+        last_query_latency_ms = (time.monotonic() - q0) * 1000
+
+        if resp.ok:
+            results = extract_memory_results(resp)
+            if match_substring is None and results:
+                return PollResult(results, last_query_latency_ms, via_fallback=False)
+            if match_substring is not None:
+                matching = [
+                    r for r in results
+                    if match_substring in (
+                        r.get("content", "") if isinstance(r, dict) else str(r)
+                    )
+                ]
+                if matching:
+                    return PollResult(results, last_query_latency_ms, via_fallback=False)
+
+        # Early fallback: try direct GET after a few seconds of failed search
+        elapsed = time.monotonic() - start
+        if (
+            not fallback_tried
+            and memory_ids
+            and elapsed >= get_fallback_after
+        ):
+            fallback_tried = True
+            fallback_results, fb_latency = _get_fallback(
+                nexus, memory_ids, match_substring,
+            )
+            if fallback_results:
+                return PollResult(fallback_results, fb_latency, via_fallback=True)
+
+        time.sleep(poll_interval)
+
+    # Final fallback: try direct GET if not tried yet
+    if memory_ids and not fallback_tried:
+        fallback_results, fb_latency = _get_fallback(
+            nexus, memory_ids, match_substring,
+        )
+        if fallback_results:
+            return PollResult(fallback_results, fb_latency, via_fallback=True)
+
+    return PollResult(results, last_query_latency_ms, via_fallback=False)
 
 
 # ---------------------------------------------------------------------------

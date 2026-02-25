@@ -63,6 +63,10 @@ class TestSettings(BaseSettings):
     memory_benchmark_dir: str = "~/nexus/benchmarks/memory"
     perf_samples: int = 100  # Override via NEXUS_TEST_PERF_SAMPLES
 
+    # --- HERB benchmark data ---
+    herb_sample_size: int = 20  # Override via NEXUS_TEST_HERB_SAMPLE_SIZE
+    herb_benchmark_dir: str = "~/nexus/benchmarks/herb"  # Override: NEXUS_TEST_HERB_BENCHMARK_DIR
+
     # --- Timeouts (seconds) ---
     request_timeout: float = 60.0
     connect_timeout: float = 10.0
@@ -80,7 +84,9 @@ class TestSettings(BaseSettings):
             raise ValueError(f"Refusing to run tests against non-local URL: {v}")
         return v
 
-    @field_validator("nexus_repo_dir", "benchmark_dir", "memory_benchmark_dir")
+    @field_validator(
+        "nexus_repo_dir", "benchmark_dir", "memory_benchmark_dir", "herb_benchmark_dir",
+    )
     @classmethod
     def expand_home(cls, v: str) -> str:
         """Expand ~ in paths."""
