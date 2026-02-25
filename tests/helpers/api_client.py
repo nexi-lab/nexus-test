@@ -443,6 +443,7 @@ class NexusClient:
         metadata: dict[str, Any] | None = None,
         zone: str | None = None,
         timestamp: str | None = None,
+        generate_embedding: bool = True,
     ) -> RpcResponse:
         """Store a memory via REST POST /api/v2/memories."""
         body: dict[str, Any] = {"content": content}
@@ -450,6 +451,8 @@ class NexusClient:
             body["metadata"] = metadata
         if timestamp is not None:
             body["valid_at"] = timestamp
+        if not generate_embedding:
+            body["generate_embedding"] = False
         headers: dict[str, str] = {}
         if zone:
             headers["X-Nexus-Zone-ID"] = zone
@@ -593,6 +596,90 @@ class NexusClient:
             headers["X-Nexus-Zone-ID"] = zone
         return self.http.get(f"/api/v2/graph/entity/{entity}", headers=headers)
 
+    def memory_get(
+        self, memory_id: str, *, zone: str | None = None
+    ) -> RpcResponse:
+        """Get a single memory by ID via REST GET /api/v2/memories/{id}."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.get(f"/api/v2/memories/{memory_id}", headers=headers)
+        return self._rest_to_rpc(resp)
+
+    def memory_update(
+        self,
+        memory_id: str,
+        content: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        zone: str | None = None,
+    ) -> RpcResponse:
+        """Update a memory via REST PUT /api/v2/memories/{id}."""
+        body: dict[str, Any] = {"content": content}
+        if metadata is not None:
+            body["metadata"] = metadata
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.put(
+            f"/api/v2/memories/{memory_id}", json=body, headers=headers
+        )
+        return self._rest_to_rpc(resp)
+
+    def memory_invalidate(
+        self, memory_id: str, *, zone: str | None = None
+    ) -> RpcResponse:
+        """Invalidate a memory by setting state to 'inactive' via PUT."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.put(
+            f"/api/v2/memories/{memory_id}",
+            json={"state": "inactive"},
+            headers=headers,
+        )
+        return self._rest_to_rpc(resp)
+
+    def memory_revalidate(
+        self, memory_id: str, *, zone: str | None = None
+    ) -> RpcResponse:
+        """Revalidate a memory by setting state to 'active' via PUT."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.put(
+            f"/api/v2/memories/{memory_id}",
+            json={"state": "active"},
+            headers=headers,
+        )
+        return self._rest_to_rpc(resp)
+
+    def memory_lineage(
+        self, memory_id: str, *, zone: str | None = None
+    ) -> RpcResponse:
+        """Get lineage chain via GET /api/v2/memories/{id}/lineage."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.get(
+            f"/api/v2/memories/{memory_id}/lineage", headers=headers
+        )
+        return self._rest_to_rpc(resp)
+
+    def memory_diff(
+        self, memory_id: str, v1: int, v2: int, *, zone: str | None = None
+    ) -> RpcResponse:
+        """Diff two memory versions via GET /api/v2/memories/{id}/diff."""
+        headers: dict[str, str] = {}
+        if zone:
+            headers["X-Nexus-Zone-ID"] = zone
+        resp = self.http.get(
+            f"/api/v2/memories/{memory_id}/diff",
+            params={"v1": v1, "v2": v2},
+            headers=headers,
+        )
+        return self._rest_to_rpc(resp)
+
     # --- Search REST methods ---
 
     def search(
@@ -659,6 +746,47 @@ class NexusClient:
             "/api/v2/search/refresh",
             params={"path": path, "change_type": change_type},
         )
+
+    # --- IPC REST methods ---
+
+    def ipc_provision(self, agent_id: str) -> RpcResponse:
+        """Provision IPC directories for an agent via POST /api/v2/ipc/provision/{agent_id}."""
+        resp = self.http.post(f"/api/v2/ipc/provision/{agent_id}")
+        return self._rest_to_rpc(resp)
+
+    def ipc_send(
+        self,
+        sender: str,
+        recipient: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        msg_type: str = "task",
+        ttl_seconds: int | None = None,
+        correlation_id: str | None = None,
+    ) -> RpcResponse:
+        """Send an IPC message via POST /api/v2/ipc/send."""
+        body: dict[str, Any] = {
+            "sender": sender,
+            "recipient": recipient,
+            "type": msg_type,
+            "payload": payload or {},
+        }
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        if correlation_id is not None:
+            body["correlation_id"] = correlation_id
+        resp = self.http.post("/api/v2/ipc/send", json=body)
+        return self._rest_to_rpc(resp)
+
+    def ipc_inbox(self, agent_id: str) -> RpcResponse:
+        """List messages in an agent's inbox via GET /api/v2/ipc/inbox/{agent_id}."""
+        resp = self.http.get(f"/api/v2/ipc/inbox/{agent_id}")
+        return self._rest_to_rpc(resp)
+
+    def ipc_inbox_count(self, agent_id: str) -> RpcResponse:
+        """Count messages in an agent's inbox via GET /api/v2/ipc/inbox/{agent_id}/count."""
+        resp = self.http.get(f"/api/v2/ipc/inbox/{agent_id}/count")
+        return self._rest_to_rpc(resp)
 
     # --- Zone client factory ---
 
