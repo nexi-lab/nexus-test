@@ -220,6 +220,26 @@ class NexusClient:
             params["zone_id"] = zone
         return self.rpc("get_metadata", params)
 
+    def edit_file(
+        self,
+        path: str,
+        edits: list[list[str]] | list[dict[str, Any]],
+        *,
+        if_match: str | None = None,
+        fuzzy_threshold: float = 0.85,
+        preview: bool = False,
+        zone: str | None = None,
+    ) -> RpcResponse:
+        """Apply surgical search/replace edits to a file via JSON-RPC."""
+        params: dict[str, Any] = {"path": path, "edits": edits}
+        if if_match is not None:
+            params["if_match"] = if_match
+        if fuzzy_threshold != 0.85:
+            params["fuzzy_threshold"] = fuzzy_threshold
+        if preview:
+            params["preview"] = True
+        return self.rpc("edit", params, zone=zone)
+
     def rmdir(self, path: str, *, recursive: bool = False, zone: str | None = None) -> RpcResponse:
         """Remove a directory via JSON-RPC."""
         params: dict[str, Any] = {"path": path}
