@@ -452,7 +452,7 @@ Cross-validate with LongMemEval and MemoryAgentBench.
 | search/004 | Index on write | auto,search | Immediately searchable |
 | search/005 | HERB Q&A accuracy | auto,perf,search | Score against ground truth |
 | search/006 | Query expansion | auto,search | Expanded query finds more |
-| search/007 | Code search (Zoekt) | auto,search | Trigram index works |
+| search/007 | Trigram search (Zoekt) | auto,search | Trigram index works (code + prose) |
 | search/008 | Search daemon warmup | auto,search | Zero cold-start |
 | search/009 | Embedding cache dedup | auto,search,perf | 90%+ cache hit on repeated content |
 | search/010 | Search accuracy: NDCG@10 on HERB | auto,perf,search | NDCG@10 ≥ 0.6 on HERB answerable Qs |
@@ -466,8 +466,14 @@ Cross-validate with LongMemEval and MemoryAgentBench.
 | search/018 | RAG faithfulness (RAGAS) | auto,search,llm | Faithfulness ≥ 0.7 (no hallucination) |
 | search/019 | RAG answer relevancy (RAGAS) | auto,search,llm | Answer relevancy ≥ 0.7 |
 | search/020 | RAG context precision (RAGAS) | auto,search,llm | Context precision ≥ 0.6 |
+| search/021 | Grep substring search latency | auto,perf,search | p95 < 200ms on 10K files |
+| search/022 | Grep regex search latency | auto,perf,search | p95 < 500ms on 10K files |
+| search/023 | Zoekt trigram search latency | auto,perf,search | p95 < 100ms on 10K files |
+| search/024 | Grep vs Zoekt throughput comparison | stress,perf,search | Zoekt ≥ 5× faster than grep on 10K files |
+| search/025 | Plain-text search scaling (1K→100K files) | stress,perf,search | Latency grows sub-linearly with corpus size |
+| search/026 | Zoekt plain-text search (non-code) | auto,search | Trigram index returns matches in prose/docs |
 
-#### Benchmark Datasets & Sources for search + RAG (search/002–009, llm/003)
+#### Benchmark Datasets & Sources for search + RAG (search/002–009, search/021–026, llm/003)
 
 Benchmarks for evaluating search accuracy, retrieval quality, and RAG pipeline
 correctness. Use [RAGAS](https://docs.ragas.io/) framework metrics (faithfulness,
@@ -494,6 +500,10 @@ answer quality.
 | P0 | search/015 | **HotPotQA** (EMNLP 2018) | [HuggingFace](https://huggingface.co/datasets/hotpotqa/hotpot_qa) | `datasets.load_dataset("hotpotqa/hotpot_qa")` | 113K multi-hop Q&A. Use distractor setting (10 paragraphs, 2 relevant) for retrieval precision. |
 | P1 | search/016 | **MuSiQue** | [HuggingFace](https://huggingface.co/datasets/drt/musique) | `datasets.load_dataset("drt/musique")` | 2–4 hop compositional QA with unanswerable questions. Harder than HotPotQA. |
 | P0 | search/018-020 | **RAGAS framework** | [Docs](https://docs.ragas.io/) | `pip install ragas` | Reference-free RAG evaluation: faithfulness, answer relevancy, context precision. No ground truth needed. |
+| P0 | search/021-022 | **HERB corpus** (local) | `benchmarks/herb/` | Already in repo — ~10K files of mixed prose, code, config | Baseline corpus for grep substring + regex latency benchmarks. Measure p50/p95/p99 over repeated queries. No external dependencies. |
+| P0 | search/023-024 | **HERB corpus + Zoekt index** (local) | `benchmarks/herb/` | Already in repo; requires `zoekt-index` binary | Same corpus indexed by Zoekt. Compare trigram search latency vs raw grep. Expect Zoekt ≥ 5× throughput advantage on substring queries. |
+| P1 | search/025 | **Synthetic scaling corpus** (generated) | In-repo generator | `python -m tests.helpers.gen_corpus --files 1000,10000,100000` | Generated text files at 1K/10K/100K scale. Measure grep + Zoekt latency at each tier. Verify sub-linear scaling (log or sqrt growth). |
+| P0 | search/026 | **HERB docs subset** (local) | `benchmarks/herb/docs/` | Already in repo — prose/markdown/README files | Non-code plain-text files to verify Zoekt indexes and searches prose, not just source code. Use known phrases from docs as queries. |
 
 ### 4.9 — Pay
 
