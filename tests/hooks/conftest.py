@@ -1,18 +1,13 @@
-"""Hook test fixtures and contract constants.
+"""Hook test fixtures — production-observable metadata verification.
 
-Documents the test hook contract established by NEXUS_TEST_HOOKS=true.
-The server must register test hooks that:
-    - Record audit markers on post-write
-    - Block writes to /blocked/ paths on pre-write
-    - Record chain execution order on post-write
-
-Hook state is queried via REST endpoints at /api/test-hooks/*.
+Tests verify VFS hook pipeline correctness by observing production side
+effects (metadata population, version updates, timestamps) rather than
+injected test hooks.  No server-side test scaffolding required.
 """
 
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import uuid
 from collections.abc import Generator
 from typing import Any
@@ -21,18 +16,34 @@ import pytest
 
 from tests.helpers.api_client import NexusClient
 
+
 # ---------------------------------------------------------------------------
-# Contract constants (must match nexus/core/test_hooks.py)
+# Metadata extraction helpers
 # ---------------------------------------------------------------------------
 
-HOOK_BLOCKED_PREFIX = "/blocked/"
-HOOK_TEST_ENDPOINT = "/api/test-hooks"
-CHAIN_EXPECTED_ORDER = "BA"  # B (registered first) runs before A
+
+def extract_metadata_field(meta_result: dict, field: str) -> Any:
+    """Extract field from metadata, handling nested 'metadata' wrapper.
+
+    The server may return metadata at the top level or nested under a
+    ``"metadata"`` key.  This helper checks both.
+    """
+    if field in meta_result:
+        return meta_result[field]
+    inner = meta_result.get("metadata", {})
+    if isinstance(inner, dict):
+        return inner.get(field)
+    return None
 
 
-def path_hash(path: str) -> str:
-    """Compute path hash matching the server-side convention."""
-    return hashlib.sha256(path.encode()).hexdigest()[:16]
+def flatten_metadata(meta_result: dict) -> dict:
+    """Merge top-level and nested metadata keys into a single dict."""
+    flat: dict[str, Any] = dict(meta_result)
+    inner = meta_result.get("metadata", {})
+    if isinstance(inner, dict):
+        for k, v in inner.items():
+            flat.setdefault(k, v)
+    return flat
 
 
 # ---------------------------------------------------------------------------
@@ -42,25 +53,9 @@ def path_hash(path: str) -> str:
 
 @pytest.fixture
 def hook_test_path(worker_id: str) -> str:
-    """Unique path NOT under /blocked/ for positive hook tests."""
+    """Unique path for positive hook tests."""
     tag = uuid.uuid4().hex[:8]
     return f"/test-hooks/{worker_id}/{tag}/data.txt"
-
-
-@pytest.fixture
-def blocked_path(worker_id: str) -> str:
-    """Unique path under /blocked/ for rejection tests."""
-    tag = uuid.uuid4().hex[:8]
-    return f"{HOOK_BLOCKED_PREFIX}{worker_id}/{tag}/secret.txt"
-
-
-def _hooks_available(nexus: NexusClient) -> bool:
-    """Check if test hook endpoints are available."""
-    try:
-        resp = nexus.api_get(f"{HOOK_TEST_ENDPOINT}/state")
-        return resp.status_code == 200
-    except Exception:
-        return False
 
 
 @pytest.fixture
@@ -69,12 +64,3 @@ def hook_file(nexus: NexusClient, hook_test_path: str) -> Generator[str, Any, No
     yield hook_test_path
     with contextlib.suppress(Exception):
         nexus.delete_file(hook_test_path)
-
-
-@pytest.fixture(autouse=True)
-def _skip_if_hooks_unavailable(nexus: NexusClient) -> None:
-    """Skip hook tests if NEXUS_TEST_HOOKS is not enabled on the server."""
-    if not _hooks_available(nexus):
-        pytest.skip(
-            "Test hooks not available. Start server with NEXUS_TEST_HOOKS=true"
-        )
