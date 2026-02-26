@@ -223,3 +223,37 @@ Generates a unique file path under the blocked prefix for rejection tests:
 **TestHookChainOrdering** -- verifies hook priority:
 
 - `hooks/004`: Write file, query chain endpoint, assert `trace == "BA"`
+
+### Extended Tests (test_hooks_backends.py)
+
+**TestHookFollowerNode** -- verifies hooks on remote/follower node:
+
+- `hooks/005`: Write via follower node, query audit endpoint on follower, assert marker exists
+
+**TestHookOverwrite** -- verifies hooks on file updates:
+
+- `hooks/006`: Write file twice, assert audit marker reflects latest write metadata
+
+**TestHookConcurrency** -- verifies thread safety:
+
+- `hooks/007`: N concurrent writes via ThreadPoolExecutor, all produce audit markers
+
+**TestHookChainZone** -- verifies zone-independence:
+
+- `hooks/008`: Write in scratch zone, assert chain order == "BA"
+
+**TestHookPostOpSemantics** -- verifies two-phase dispatch:
+
+- `hooks/009`: Write to blocked path, assert file IS readable (post-op semantics)
+
+**TestHookBlockedZone** -- verifies rejection across zones:
+
+- `hooks/010`: Write to blocked path in scratch zone, assert error response
+
+**TestHookDistinctMarkers** -- verifies marker isolation:
+
+- `hooks/011`: N writes to different paths, each has its own audit marker
+
+**TestHookLargeContent** -- verifies stress handling:
+
+- `hooks/012`: Write 1 MB file, assert audit marker recorded with correct size

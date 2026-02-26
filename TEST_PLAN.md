@@ -282,6 +282,14 @@ Test IDs follow `nxfs/{feature}/{NNN}` (e.g., `nxfs/kernel/001`).
 | hooks/002 | Post-write hook invoked | auto,kernel | Hook called after write |
 | hooks/003 | Hook rejection blocks write | auto,kernel | Write denied |
 | hooks/004 | Hook chain ordering | auto,kernel | Executed in order |
+| hooks/005 | Audit marker on follower node | auto,hooks,federation | Marker exists on follower |
+| hooks/006 | Hook fires on overwrite | auto,hooks | Audit reflects latest write |
+| hooks/007 | Concurrent writes trigger hooks | auto,hooks,stress | N writes → N markers |
+| hooks/008 | Chain order across zones | auto,hooks,zone | Order == "BA" in scratch zone |
+| hooks/009 | Blocked write preserves file | auto,hooks | File readable despite error (post-op) |
+| hooks/010 | Blocked path in non-default zone | auto,hooks,zone | Error in scratch zone |
+| hooks/011 | Distinct markers per path | auto,hooks | N paths → N distinct markers |
+| hooks/012 | Hook with large content | auto,hooks,stress | 1 MB file → audit recorded |
 
 ### 4.4 — Authentication & Sessions
 
