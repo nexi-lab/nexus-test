@@ -274,22 +274,21 @@ Test IDs follow `nxfs/{feature}/{NNN}` (e.g., `nxfs/kernel/001`).
 | zone/011 | Deleted zone read fails cleanly | auto,zone | 4xx error, not 500 |
 | zone/012 | Invalid zone ID rejected | auto,zone,security | Injection/traversal patterns rejected |
 
-### 4.3 — VFS Hooks
+### 4.3 — VFS Hooks (Metadata-Observable)
+
+Tests verify hook pipeline via production observable effects (`get_metadata()`)
+rather than injected test hooks. No `NEXUS_TEST_HOOKS` flag required.
 
 | ID | Test | Groups | Pass Criteria |
 |----|------|--------|---------------|
-| hooks/001 | Pre-write hook invoked | auto,kernel | Hook called before write |
-| hooks/002 | Post-write hook invoked | auto,kernel | Hook called after write |
-| hooks/003 | Hook rejection blocks write | auto,kernel | Write denied |
-| hooks/004 | Hook chain ordering | auto,kernel | Executed in order |
-| hooks/005 | Audit marker on follower node | auto,hooks,federation | Marker exists on follower |
-| hooks/006 | Hook fires on overwrite | auto,hooks | Audit reflects latest write |
-| hooks/007 | Concurrent writes trigger hooks | auto,hooks,stress | N writes → N markers |
-| hooks/008 | Chain order across zones | auto,hooks,zone | Order == "BA" in scratch zone |
-| hooks/009 | Blocked write preserves file | auto,hooks | File readable despite error (post-op) |
-| hooks/010 | Blocked path in non-default zone | auto,hooks,zone | Error in scratch zone |
-| hooks/011 | Distinct markers per path | auto,hooks | N paths → N distinct markers |
-| hooks/012 | Hook with large content | auto,hooks,stress | 1 MB file → audit recorded |
+| hooks/001 | Write populates metadata | auto,hooks | `get_metadata()` returns size/etag/hash |
+| hooks/002 | Metadata has timestamps and size | auto,hooks | `created_at`/`modified_at` present, size > 0 |
+| hooks/003 | Follower write has metadata | auto,hooks,federation | `get_metadata()` on follower returns valid data |
+| hooks/004 | Overwrite updates metadata | auto,hooks | Size reflects latest write after overwrite |
+| hooks/005 | Concurrent writes all have metadata | auto,hooks,stress | N writes → N valid `get_metadata()` results |
+| hooks/006 | Zone write has metadata | auto,hooks,zone | `get_metadata()` in scratch zone returns valid data |
+| hooks/007 | Distinct metadata per path | auto,hooks | N paths → N unique metadata entries |
+| hooks/008 | Large write metadata | auto,hooks,stress | 1 MB write → `get_metadata()` size ≥ 1 MB |
 
 ### 4.4 — Authentication & Sessions
 

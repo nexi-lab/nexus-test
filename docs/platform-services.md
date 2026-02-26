@@ -697,7 +697,6 @@ NEXUS_DATABASE_URL="postgresql://user:pass@localhost:5432/nexus" \
 NEXUS_PROFILE=full \
 NEXUS_ENFORCE_PERMISSIONS=true \
 NEXUS_ENABLE_WRITE_BUFFER=true \
-NEXUS_TEST_HOOKS=true \
 uv run nexus serve --auth-type database --init
 
 # Or with SQLite (lighter, fewer services)

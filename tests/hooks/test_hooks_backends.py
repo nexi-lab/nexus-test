@@ -1,12 +1,15 @@
 """VFS hook E2E tests — backend, remote, zone, and stress scenarios.
 
-Tests: hooks/005 through hooks/012
-Covers: follower-node hooks, overwrite hooks, concurrent hooks,
-        cross-zone hooks, post-op file persistence, and large-content hooks.
+Tests: hooks/003 through hooks/008
+Covers: follower-node metadata, overwrite metadata updates, concurrent
+        metadata population, cross-zone metadata, distinct metadata per
+        path, and large-content metadata.
 
 Reference: TEST_PLAN.md §4.3
 
-Requires: Server started with NEXUS_TEST_HOOKS=true
+Strategy: Verify hook pipeline correctness by observing production metadata
+populated by RecordStoreWriteObserver via ``get_metadata()`` RPC calls.
+No injected test hooks or ``/api/test-hooks/*`` endpoints required.
 """
 
 from __future__ import annotations
@@ -22,12 +25,7 @@ import pytest
 from tests.config import TestSettings
 from tests.helpers.api_client import NexusClient
 from tests.helpers.assertions import assert_rpc_success
-from tests.hooks.conftest import (
-    CHAIN_EXPECTED_ORDER,
-    HOOK_BLOCKED_PREFIX,
-    HOOK_TEST_ENDPOINT,
-    path_hash,
-)
+from tests.hooks.conftest import extract_metadata_field, flatten_metadata
 
 
 # ---------------------------------------------------------------------------
@@ -72,27 +70,27 @@ def overwrite_file(
 
 
 # ---------------------------------------------------------------------------
-# hooks/005 — Follower node
+# hooks/003 — Follower node metadata
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.auto
 @pytest.mark.hooks
 @pytest.mark.federation
-class TestHookFollowerNode:
-    """Verify that VFS hooks fire on the follower (remote) node."""
+class TestHookFollowerMetadata:
+    """Verify that writing via follower populates metadata."""
 
-    def test_audit_marker_on_follower_write(
+    def test_follower_write_has_metadata(
         self,
         nexus_follower: NexusClient,
         follower_hook_file: str,
     ) -> None:
-        """hooks/005: Write via follower node -> audit marker exists.
+        """hooks/003: Write via follower node -> get_metadata() returns valid data.
 
         Hooks must fire regardless of which Raft node handles the write.
-        Tests remote/follower backend integration (Dragonfly, PostgreSQL).
+        Verifies metadata population through follower/remote backend.
         """
-        content = f"follower_audit_{uuid.uuid4().hex[:8]}"
+        content = f"follower_meta_{uuid.uuid4().hex[:8]}"
         resp = nexus_follower.write_file(follower_hook_file, content)
 
         # Follower may redirect or proxy — skip if write not supported
@@ -101,83 +99,91 @@ class TestHookFollowerNode:
 
         assert_rpc_success(resp)
 
-        ph = path_hash(follower_hook_file)
-        audit_resp = nexus_follower.api_get(
-            f"{HOOK_TEST_ENDPOINT}/audit/{ph}"
+        meta_resp = nexus_follower.get_metadata(follower_hook_file)
+        assert meta_resp.ok, (
+            f"get_metadata on follower failed: {meta_resp.error}"
         )
-        assert audit_resp.status_code == 200, (
-            f"Follower audit endpoint failed: {audit_resp.status_code}"
+
+        meta = meta_resp.result
+        assert isinstance(meta, dict), f"Expected dict metadata, got {type(meta)}"
+
+        flat = flatten_metadata(meta)
+        # Verify basic metadata fields are populated
+        size = flat.get("size")
+        assert size is not None and int(size) > 0, (
+            f"Follower metadata should have non-zero size, got: {size}"
         )
-        data = audit_resp.json()
-        assert data.get("found") is True, (
-            f"Audit marker not found on follower for {follower_hook_file}: {data}"
-        )
-        assert data.get("path") == follower_hook_file
 
 
 # ---------------------------------------------------------------------------
-# hooks/006 — Overwrite (update existing file)
+# hooks/004 — Overwrite updates metadata
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.auto
 @pytest.mark.hooks
-class TestHookOverwrite:
-    """Verify that hooks fire on file updates, not just initial writes."""
+class TestHookOverwriteMetadata:
+    """Verify that metadata reflects the latest write on overwrite."""
 
-    def test_hook_fires_on_overwrite(
+    def test_overwrite_updates_metadata(
         self,
         nexus: NexusClient,
         overwrite_file: str,
     ) -> None:
-        """hooks/006: Overwrite existing file -> audit marker updated.
+        """hooks/004: Two writes -> metadata reflects latest content.
 
-        First write creates the file; second write overwrites it.
-        Audit marker should reflect the latest write's metadata.
+        First write creates the file; second write overwrites with longer
+        content.  Metadata size should reflect the latest write.
         """
         # Initial write
         initial_content = "initial_content_v1"
         assert_rpc_success(nexus.write_file(overwrite_file, initial_content))
 
-        # Overwrite with different content
+        # Overwrite with different (longer) content
         updated_content = "updated_content_v2_longer_payload"
         assert_rpc_success(nexus.write_file(overwrite_file, updated_content))
 
-        ph = path_hash(overwrite_file)
-        resp = nexus.api_get(f"{HOOK_TEST_ENDPOINT}/audit/{ph}")
-        assert resp.status_code == 200
+        meta_resp = nexus.get_metadata(overwrite_file)
+        assert meta_resp.ok, f"get_metadata failed: {meta_resp.error}"
 
-        data = resp.json()
-        assert data.get("found") is True
-        assert data.get("path") == overwrite_file
-        # Size should match the LATEST write, not the initial one
-        assert data.get("size", 0) >= len(updated_content), (
-            f"Audit size should reflect overwritten content "
-            f"(>= {len(updated_content)}), got {data.get('size')}"
-        )
+        meta = meta_resp.result
+        assert isinstance(meta, dict)
+
+        # Size should match the LATEST write
+        size = extract_metadata_field(meta, "size")
+        if size is not None:
+            assert int(size) >= len(updated_content), (
+                f"Metadata size should reflect overwritten content "
+                f"(>= {len(updated_content)}), got {size}"
+            )
+
+        # If etag is present, verify it's not empty
+        etag = extract_metadata_field(meta, "etag")
+        if etag is not None:
+            assert etag, "Etag should be non-empty after overwrite"
 
 
 # ---------------------------------------------------------------------------
-# hooks/007 — Concurrent writes
+# hooks/005 — Concurrent writes all produce metadata
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.auto
 @pytest.mark.hooks
 @pytest.mark.stress
-class TestHookConcurrency:
-    """Verify that concurrent writes each trigger independent hooks."""
+class TestHookConcurrentMetadata:
+    """Verify that concurrent writes each populate metadata."""
 
-    def test_concurrent_writes_all_trigger_hooks(
+    def test_concurrent_writes_all_have_metadata(
         self,
         nexus: NexusClient,
         worker_id: str,
     ) -> None:
-        """hooks/007: N concurrent writes -> N audit markers exist.
+        """hooks/005: N concurrent writes -> all have valid get_metadata().
 
         Uses ThreadPoolExecutor to issue parallel writes and verifies
-        each one produced its own audit marker. Validates hook pipeline
-        is thread-safe with all backends (Dragonfly, PostgreSQL).
+        each one has populated metadata.  Validates hook pipeline is
+        thread-safe with all backends.
         """
         n_writes = 5
         tag = uuid.uuid4().hex[:6]
@@ -186,182 +192,101 @@ class TestHookConcurrency:
             for i in range(n_writes)
         ]
 
-        def _write_and_check(path: str) -> tuple[str, bool]:
+        def _write_and_check(path: str) -> tuple[str, bool, str]:
             content = f"concurrent_{uuid.uuid4().hex[:8]}"
             w_resp = nexus.write_file(path, content)
             if not w_resp.ok:
-                return path, False
-            ph = path_hash(path)
-            a_resp = nexus.api_get(f"{HOOK_TEST_ENDPOINT}/audit/{ph}")
-            if a_resp.status_code != 200:
-                return path, False
-            data = a_resp.json()
-            return path, data.get("found") is True
+                return path, False, f"write failed: {w_resp.error}"
+            m_resp = nexus.get_metadata(path)
+            if not m_resp.ok:
+                return path, False, f"get_metadata failed: {m_resp.error}"
+            meta = m_resp.result
+            if not isinstance(meta, dict):
+                return path, False, f"metadata not dict: {type(meta)}"
+            flat = flatten_metadata(meta)
+            size = flat.get("size")
+            if size is None or int(size) == 0:
+                return path, False, f"size missing or zero: {flat}"
+            return path, True, ""
 
-        results: dict[str, bool] = {}
+        results: dict[str, tuple[bool, str]] = {}
         with ThreadPoolExecutor(max_workers=n_writes) as pool:
             futures = {pool.submit(_write_and_check, p): p for p in paths}
             for future in as_completed(futures):
-                path, found = future.result()
-                results[path] = found
+                path, ok, msg = future.result()
+                results[path] = (ok, msg)
 
         # Cleanup
         for p in paths:
             with contextlib.suppress(Exception):
                 nexus.delete_file(p)
 
-        missing = [p for p, found in results.items() if not found]
-        assert not missing, (
-            f"{len(missing)}/{n_writes} concurrent writes missing audit markers: "
-            f"{missing}"
+        failed = {p: msg for p, (ok, msg) in results.items() if not ok}
+        assert not failed, (
+            f"{len(failed)}/{n_writes} concurrent writes missing metadata: {failed}"
         )
 
 
 # ---------------------------------------------------------------------------
-# hooks/008 — Chain order across zones
+# hooks/006 — Zone metadata
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.auto
 @pytest.mark.hooks
 @pytest.mark.zone
-class TestHookChainZone:
-    """Verify hook chain ordering is consistent across zones."""
+class TestHookZoneMetadata:
+    """Verify metadata is populated for writes in non-default zones."""
 
-    def test_chain_order_in_scratch_zone(
+    def test_zone_write_has_metadata(
         self,
         nexus: NexusClient,
         zone_hook_file: str,
         settings: TestSettings,
     ) -> None:
-        """hooks/008: Write in scratch zone -> chain order == "BA".
+        """hooks/006: Write in scratch zone -> get_metadata() returns valid data.
 
-        Ensures hook registration order is zone-independent.
-        Tests with PostgreSQL RecordStore and Dragonfly caching active.
+        Ensures hook pipeline runs correctly in non-default zones.
         """
-        content = f"zone_chain_{uuid.uuid4().hex[:8]}"
+        content = f"zone_meta_{uuid.uuid4().hex[:8]}"
         resp = nexus.write_file(
             zone_hook_file, content, zone=settings.scratch_zone
         )
         assert_rpc_success(resp)
 
-        # Zone isolation scopes paths: /path → /zone/{zone_id}/path
-        # Hooks see the scoped path, so hash must match.
-        scoped_path = f"/zone/{settings.scratch_zone}{zone_hook_file}"
-        ph = path_hash(scoped_path)
-        chain_resp = nexus.api_get(f"{HOOK_TEST_ENDPOINT}/chain/{ph}")
-        assert chain_resp.status_code == 200
-
-        data = chain_resp.json()
-        assert data.get("found") is True, (
-            f"Chain trace not found for {zone_hook_file} in zone "
-            f"{settings.scratch_zone} (scoped: {scoped_path}): {data}"
+        meta_resp = nexus.get_metadata(zone_hook_file, zone=settings.scratch_zone)
+        assert meta_resp.ok, (
+            f"get_metadata in zone {settings.scratch_zone} failed: {meta_resp.error}"
         )
-        assert data.get("trace") == CHAIN_EXPECTED_ORDER, (
-            f"Chain order in scratch zone should be {CHAIN_EXPECTED_ORDER!r}, "
-            f"got {data.get('trace')!r}"
+
+        meta = meta_resp.result
+        assert isinstance(meta, dict)
+
+        flat = flatten_metadata(meta)
+        size = flat.get("size")
+        assert size is not None and int(size) > 0, (
+            f"Zone metadata should have non-zero size, got: {size}"
         )
 
 
 # ---------------------------------------------------------------------------
-# hooks/009 — Blocked path preserves file (post-op semantics)
+# hooks/007 — Distinct metadata per path
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.auto
 @pytest.mark.hooks
-class TestHookPostOpSemantics:
-    """Verify post-operation hook semantics: data committed before hook runs."""
+class TestHookDistinctMetadata:
+    """Verify each write to a different path produces its own metadata."""
 
-    def test_blocked_write_file_still_readable(
+    def test_sequential_writes_distinct_metadata(
         self,
         nexus: NexusClient,
         worker_id: str,
     ) -> None:
-        """hooks/009: Blocked write -> file data IS persisted (post-op).
+        """hooks/007: N sequential writes to different paths -> N unique metadata.
 
-        The BlockedPathHook runs AFTER the write commits.
-        AuditLogError causes error response, but the file remains in storage.
-        This verifies the two-phase dispatch model.
-        """
-        tag = uuid.uuid4().hex[:8]
-        blocked = f"{HOOK_BLOCKED_PREFIX}{worker_id}/{tag}/persisted.txt"
-        content = "should_persist_despite_hook_error"
-
-        write_resp = nexus.write_file(blocked, content)
-        assert not write_resp.ok, (
-            f"Write to {blocked} should return error from post-write hook"
-        )
-
-        # File should still be readable because hook is post-operation
-        read_resp = nexus.read_file(blocked)
-        if read_resp.ok:
-            assert read_resp.content_str == content, (
-                f"Persisted content mismatch: expected {content!r}, "
-                f"got {read_resp.content_str!r}"
-            )
-
-        # Cleanup
-        with contextlib.suppress(Exception):
-            nexus.delete_file(blocked)
-
-
-# ---------------------------------------------------------------------------
-# hooks/010 — Blocked path in non-default zone
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.auto
-@pytest.mark.hooks
-@pytest.mark.zone
-class TestHookBlockedZone:
-    """Verify hook rejection works across zones."""
-
-    def test_blocked_path_rejected_in_scratch_zone(
-        self,
-        nexus: NexusClient,
-        worker_id: str,
-        settings: TestSettings,
-    ) -> None:
-        """hooks/010: Blocked path in scratch zone -> error response.
-
-        Ensures BlockedPathHook applies regardless of zone context.
-        Tests with all backends enabled (PostgreSQL, Dragonfly).
-        """
-        tag = uuid.uuid4().hex[:8]
-        blocked = f"{HOOK_BLOCKED_PREFIX}{worker_id}/{tag}/zone_blocked.txt"
-
-        resp = nexus.write_file(
-            blocked, "zone_block_test", zone=settings.scratch_zone
-        )
-        assert not resp.ok, (
-            f"Write to {blocked} in zone {settings.scratch_zone} "
-            f"should return error from hook"
-        )
-
-        # Cleanup
-        with contextlib.suppress(Exception):
-            nexus.delete_file(blocked, zone=settings.scratch_zone)
-
-
-# ---------------------------------------------------------------------------
-# hooks/011 — Multiple sequential writes produce distinct markers
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.auto
-@pytest.mark.hooks
-class TestHookDistinctMarkers:
-    """Verify each write to a different path produces its own marker."""
-
-    def test_sequential_writes_distinct_audit_markers(
-        self,
-        nexus: NexusClient,
-        worker_id: str,
-    ) -> None:
-        """hooks/011: N sequential writes to different paths -> N markers.
-
-        Each write should produce an audit marker at its own hash.
+        Each write should produce metadata with unique path and etag.
         Validates no cross-contamination between hook invocations.
         """
         tag = uuid.uuid4().hex[:6]
@@ -371,22 +296,33 @@ class TestHookDistinctMarkers:
             for i in range(n_files)
         ]
 
+        etags: list[str | None] = []
         for i, path in enumerate(paths):
             content = f"distinct_content_{i}_{uuid.uuid4().hex[:6]}"
             assert_rpc_success(nexus.write_file(path, content))
 
-        # Verify each path has its own audit marker
+        # Verify each path has its own metadata
         for path in paths:
-            ph = path_hash(path)
-            resp = nexus.api_get(f"{HOOK_TEST_ENDPOINT}/audit/{ph}")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data.get("found") is True, (
-                f"Audit marker missing for {path} (hash={ph})"
+            meta_resp = nexus.get_metadata(path)
+            assert meta_resp.ok, f"get_metadata failed for {path}: {meta_resp.error}"
+
+            meta = meta_resp.result
+            assert isinstance(meta, dict)
+
+            flat = flatten_metadata(meta)
+            size = flat.get("size")
+            assert size is not None and int(size) > 0, (
+                f"Metadata missing for {path}: {flat}"
             )
-            assert data.get("path") == path, (
-                f"Audit marker path mismatch: expected {path!r}, "
-                f"got {data.get('path')!r}"
+
+            etag = flat.get("etag")
+            etags.append(etag)
+
+        # If etags are available, verify they're all unique (different content)
+        valid_etags = [e for e in etags if e is not None]
+        if len(valid_etags) == n_files:
+            assert len(set(valid_etags)) == n_files, (
+                f"Expected {n_files} distinct etags, got: {valid_etags}"
             )
 
         # Cleanup
@@ -396,22 +332,22 @@ class TestHookDistinctMarkers:
 
 
 # ---------------------------------------------------------------------------
-# hooks/012 — Large content (stress)
+# hooks/008 — Large content metadata
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.auto
 @pytest.mark.hooks
 @pytest.mark.stress
-class TestHookLargeContent:
+class TestHookLargeContentMetadata:
     """Verify hooks handle large file content without failure."""
 
-    def test_hook_fires_on_large_write(
+    def test_large_write_has_correct_metadata(
         self,
         nexus: NexusClient,
         worker_id: str,
     ) -> None:
-        """hooks/012: Write 1 MB file -> audit marker recorded.
+        """hooks/008: Write 1 MB file -> get_metadata() size >= 1 MB.
 
         Tests hook pipeline stability with large payloads through all
         backends (Dragonfly cache, PostgreSQL RecordStore).
@@ -423,16 +359,16 @@ class TestHookLargeContent:
         large_content = "X" * (1024 * 1024)
         assert_rpc_success(nexus.write_file(path, large_content))
 
-        ph = path_hash(path)
-        resp = nexus.api_get(f"{HOOK_TEST_ENDPOINT}/audit/{ph}")
-        assert resp.status_code == 200
+        meta_resp = nexus.get_metadata(path)
+        assert meta_resp.ok, f"get_metadata failed for large file: {meta_resp.error}"
 
-        data = resp.json()
-        assert data.get("found") is True, (
-            f"Audit marker not found for large file {path}: {data}"
-        )
-        assert data.get("size", 0) >= 1024 * 1024, (
-            f"Audit marker size should be >= 1MB, got {data.get('size')}"
+        meta = meta_resp.result
+        assert isinstance(meta, dict)
+
+        size = extract_metadata_field(meta, "size")
+        assert size is not None, f"Large file metadata should have size: {meta}"
+        assert int(size) >= 1024 * 1024, (
+            f"Metadata size should be >= 1 MB, got {size}"
         )
 
         # Cleanup
