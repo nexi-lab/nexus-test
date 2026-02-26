@@ -254,7 +254,13 @@ class TestHookZoneMetadata:
         )
         assert_rpc_success(resp)
 
-        meta_resp = nexus.get_metadata(zone_hook_file, zone=settings.scratch_zone)
+        # Use rpc() directly because NexusClient.get_metadata() incorrectly
+        # puts zone_id in params instead of sending it as a header.
+        meta_resp = nexus.rpc(
+            "get_metadata",
+            {"path": zone_hook_file},
+            zone=settings.scratch_zone,
+        )
         assert meta_resp.ok, (
             f"get_metadata in zone {settings.scratch_zone} failed: {meta_resp.error}"
         )
