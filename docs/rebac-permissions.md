@@ -467,6 +467,26 @@ permissions. Checks both `/health` (`enforce_permissions` field) and
 | rebac/010 | Tiger Cache write-through cycle  | quick, auto      | grant, check (populate), check (hit), revoke, fully_consistent |
 | rebac/011 | Tiger Cache stats endpoint       | quick, auto      | grant, check, GET /api/v2/cache/stats              |
 
+### Lifecycle Extended (tests/rebac/test_rebac_lifecycle_extended.py)
+
+| ID        | Test                             | Markers          | Operations                                         |
+| --------- | -------------------------------- | ---------------- | -------------------------------------------------- |
+| rebac/026 | Consistency minimize_latency     | auto             | grant, check(at_least_as_fresh), check(minimize_latency), default mode |
+| rebac/027 | Cross-zone shared-editor         | auto             | shared-editor → read+write true, execute false     |
+| rebac/028 | Cross-zone shared-owner          | auto             | shared-owner → read+write+execute all true; revoke removes all |
+| rebac/029 | Execute enforcement              | auto             | viewer/editor lack execute; only owner has execute  |
+| rebac/030 | Rename preserves permissions     | auto             | grant → rename → check new path                    |
+| rebac/031 | Directory grant propagation      | auto             | dir grant → parent relation → child inherits read  |
+
+### Backend-Specific (tests/rebac/test_rebac_backends.py)
+
+| ID        | Test                             | Markers          | Operations                                         |
+| --------- | -------------------------------- | ---------------- | -------------------------------------------------- |
+| rebac/032 | Dragonfly L2 cache stats         | auto             | stats before/after; L2 enabled; invalidation counter |
+| rebac/033 | Search + ReBAC filtering         | auto             | write files, index, search → filtered by permission |
+| rebac/034 | Batch check mixed perms/zones    | auto             | 6-check batch (read/write/execute × roles); cross-zone batch |
+| rebac/035 | ABAC condition enforcement       | auto             | ip_range condition denies; time_window condition denies |
+
 ---
 
 ## Key Patterns
