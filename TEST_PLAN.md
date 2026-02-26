@@ -358,6 +358,16 @@ rather than injected test hooks. No `NEXUS_TEST_HOOKS` flag required.
 | rebac/023 | Conditional permissions | auto,rebac | Tuple with conditions field enforced |
 | rebac/024 | Admin bypass | auto,rebac,security | Admin key bypasses ReBAC checks |
 | rebac/025 | Concurrent permission mutations | stress,rebac | No corruption under concurrent grants/revokes |
+| rebac/026 | Consistency mode minimize_latency | auto,rebac | Cached result via EVENTUAL mode; default mode works |
+| rebac/027 | Cross-zone shared-editor grants write | auto,rebac | shared-editor grants read+write, not execute |
+| rebac/028 | Cross-zone shared-owner grants all | auto,rebac | shared-owner grants read+write+execute; revoke removes all |
+| rebac/029 | Execute enforcement | auto,rebac | Viewer/editor lack execute; only owner has execute |
+| rebac/030 | Rename preserves permissions | auto,rebac | Grant on old path → rename → check new path |
+| rebac/031 | Directory grant propagation | auto,rebac | Parent folder grant → new child file inherits read |
+| rebac/032 | Dragonfly L2 cache stats | auto,rebac | L2 enabled + stats change after ops; invalidation tracked |
+| rebac/033 | Search results filtered by ReBAC | auto,rebac | Search returns only files user can read |
+| rebac/034 | Batch check mixed perms and zones | auto,rebac | read/write/execute + cross-zone in one batch |
+| rebac/035 | ABAC condition enforcement | auto,rebac | Unsatisfied condition denies access; time_window enforced |
 
 ### 4.7 — Memory
 
