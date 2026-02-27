@@ -1,6 +1,6 @@
 # Nexus Test Plan
 
-~391 tests across 14 run-type groups and 40 feature groups. Tests exercise the
+~403 tests across 14 run-type groups and 41 feature groups. Tests exercise the
 system through the `nexus` CLI and HTTP API only — no internal Python imports.
 
 ---
@@ -200,6 +200,7 @@ docker start nexus-node-1
 | `stream` | File streaming, event streaming (SSE) |
 | `credential` | Agent credentials: issue, verify, delegate |
 | `storage` | Backend drivers, CAS, caching wrappers |
+| `rlm` | Recursive Language Model: inference, streaming, budgets |
 
 ---
 
@@ -520,7 +521,7 @@ answer quality.
 | pay/009 | Spending approval workflow | auto,pay | Approve/reject flow |
 | pay/010 | Can-afford check | auto,pay | Returns boolean |
 
-### 4.10 — LLM
+### 4.10 — LLM 
 
 | ID | Test | Groups | Pass Criteria |
 |----|------|--------|---------------|
@@ -536,9 +537,16 @@ answer quality.
 
 | ID | Test | Groups | Pass Criteria |
 |----|------|--------|---------------|
-| mcp/001 | List MCP tools | auto,mcp | Registry returned |
-| mcp/002 | Execute MCP tool | auto,mcp | Result returned |
-| mcp/003 | MCP server mode | auto,mcp | External LLM can connect |
+| mcp/001 | List MCP mounts | auto,mcp | Mount list returned with fields (name, transport, mounted, tool_count) |
+| mcp/002 | List MCP tools | auto,mcp | Tools returned with name, description, input_schema |
+| mcp/003 | MCP server health | auto,mcp | Standalone MCP HTTP server /health returns 200, external client connects |
+| mcp/004 | Mount MCP server | auto,mcp | Mount created via stdio/sse, transport auto-detected, tool_count returned |
+| mcp/005 | Unmount MCP server | auto,mcp | Mount removed, no longer in mounted list, nonexistent returns error |
+| mcp/006 | Sync MCP tools | auto,mcp | Tools refreshed with tool_count, nonexistent mount errors |
+| mcp/007 | Mount validation | auto,mcp | Errors on no command/url, both command+url, empty name |
+| mcp/008 | MCP file ops via server | auto,mcp | Tool list via HTTP, write/read file via JSON-RPC tools/call |
+| mcp/009 | MCP tier filtering | auto,mcp | tier param filters by system/user/zone, subsets consistent |
+| mcp/010 | MCP with backends | auto,mcp | Mount lifecycle works with Dragonfly, PostgreSQL, Zoekt active |
 
 ### 4.12 — Sandbox
 
@@ -906,7 +914,24 @@ All federation tests require 2+ nodes.
 | cli/019 | `nexus mcp list` | auto,cli,mcp | MCP tools listed via CLI |
 | cli/020 | `nexus sandbox run "print(1)"` | auto,cli,sandbox | Output returned via CLI |
 
-### 4.43 — Upgrade & Rollback
+### 4.43 — RLM (Recursive Language Model)
+
+| ID | Test | Groups | Pass Criteria |
+|----|------|--------|---------------|
+| rlm/001 | Service unavailable (503) | auto,rlm | 503 returned when RLM service not wired (no sandbox/LLM provider) |
+| rlm/002 | Auth required (401) | auto,rlm | 401 returned for unauthenticated request to `/api/v2/rlm/infer` |
+| rlm/003 | Request validation (422) | auto,rlm | 422 on missing `query`, `max_iterations` out of range (0, 51), `max_duration_seconds` out of range |
+| rlm/004 | Non-streaming JSON response | auto,rlm | `stream: false` returns JSON with `status`, `answer`, `total_tokens`, `iterations` fields |
+| rlm/005 | SSE streaming response | auto,rlm | `stream: true` returns `text/event-stream` with `rlm.started`, `rlm.iteration`, `rlm.final_answer` events |
+| rlm/006 | Iteration budget exceeded | auto,rlm | `max_iterations: 1` triggers `rlm.budget_exceeded` event with `partial_result` |
+| rlm/007 | Duration budget exceeded | stress,rlm | `max_duration_seconds: 10` with expensive query triggers budget exceeded |
+| rlm/008 | Token budget exceeded | stress,rlm | `max_total_tokens: 1000` triggers budget exceeded |
+| rlm/009 | Context paths resolve | auto,rlm | Write files to VFS, pass as `context_paths`, model can `nexus_read()` them |
+| rlm/010 | Zone isolation | auto,rlm | Inference scoped to `zone_id`, cannot read files outside zone |
+| rlm/011 | Concurrent inference | stress,rlm | 4 parallel infer requests complete without interference |
+| rlm/012 | Sub-model routing | auto,rlm | `sub_model` param accepted, cheaper model used for sub-calls |
+
+### 4.44 — Upgrade & Rollback
 
 | ID | Test | Groups | Pass Criteria |
 |----|------|--------|---------------|
@@ -1073,10 +1098,10 @@ docker network connect nexus_nexus-network nexus-witness
 - Note: memory/020-021 (perf benchmarks) deferred to Phase 5
 
 ### Phase 3: All Bricks + Dynamic Management (Week 5-6)
-- Tests: `llm/*`, `mcp/*`, `sandbox/*`, `snapshot/*`, `skills/*`, `governance/*`, `reputation/*`, `delegation/*`, `workflow/*`, `ipc/*`, `watch/*`, `cache/*`, `versioning/*`, `locks/*`, `audit/*`, `a2a/*`, `discovery/*`, `manifest/*`, `playbook/*`, `trajectory/*`, `feedback/*`, `graph/*`, `batch/*`, `async/*`, `stream/*`, `conflict/*`, `credential/*`, `brick/*`, `storage/*`, `obs/*`, `cli/003-020`, `contract/003-006`
+- Tests: `llm/*`, `mcp/*`, `sandbox/*`, `rlm/*`, `snapshot/*`, `skills/*`, `governance/*`, `reputation/*`, `delegation/*`, `workflow/*`, `ipc/*`, `watch/*`, `cache/*`, `versioning/*`, `locks/*`, `audit/*`, `a2a/*`, `discovery/*`, `manifest/*`, `playbook/*`, `trajectory/*`, `feedback/*`, `graph/*`, `batch/*`, `async/*`, `stream/*`, `conflict/*`, `credential/*`, `brick/*`, `storage/*`, `obs/*`, `cli/003-020`, `contract/003-006`
 - Data: `benchmarks/herb/qa/`
 - Infra: `docker compose -f dockerfiles/docker-compose.demo.yml up -d` (full stack single node)
-- Count: ~120 tests
+- Count: ~132 tests
 
 ### Phase 4: Federation + Portability (Week 7-8)
 - Tests: `fed/*`, `port/*`, `chaos/*`
@@ -1091,7 +1116,7 @@ docker network connect nexus_nexus-network nexus-witness
 - Count: ~47 tests
 - Note: memory/020 (write + consolidation latency) and memory/021 (context saturation baseline) require full perf harness
 
-### Grand Total: ~391 tests
+### Grand Total: ~403 tests
 
 ---
 
