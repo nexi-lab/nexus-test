@@ -177,15 +177,24 @@ class PayClient:
 
     def create_policy(self, **kwargs: Any) -> httpx.Response:
         """POST /api/v2/pay/policies"""
-        return self.nexus.http.post("/api/v2/pay/policies", json=kwargs)
+        if "zone_id" not in kwargs:
+            kwargs["zone_id"] = "corp"
+        headers = _agent_header(None)
+        return self.nexus.http.post(
+            "/api/v2/pay/policies", json=kwargs, headers=headers
+        )
 
     def list_policies(self) -> httpx.Response:
         """GET /api/v2/pay/policies"""
-        return self.nexus.http.get("/api/v2/pay/policies")
+        headers = _agent_header(None)
+        return self.nexus.http.get("/api/v2/pay/policies", headers=headers)
 
     def delete_policy(self, policy_id: str) -> httpx.Response:
         """DELETE /api/v2/pay/policies/{id}"""
-        return self.nexus.http.delete(f"/api/v2/pay/policies/{policy_id}")
+        headers = _agent_header(None)
+        return self.nexus.http.delete(
+            f"/api/v2/pay/policies/{policy_id}", headers=headers
+        )
 
     # --- Approvals ---
 
@@ -207,18 +216,21 @@ class PayClient:
 
     def list_pending_approvals(self) -> httpx.Response:
         """GET /api/v2/pay/approvals"""
-        return self.nexus.http.get("/api/v2/pay/approvals")
+        headers = _agent_header(None)
+        return self.nexus.http.get("/api/v2/pay/approvals", headers=headers)
 
     def approve(self, approval_id: str) -> httpx.Response:
         """POST /api/v2/pay/approvals/{id}/approve"""
+        headers = _agent_header(None)
         return self.nexus.http.post(
-            f"/api/v2/pay/approvals/{approval_id}/approve"
+            f"/api/v2/pay/approvals/{approval_id}/approve", headers=headers
         )
 
     def reject(self, approval_id: str) -> httpx.Response:
         """POST /api/v2/pay/approvals/{id}/reject"""
+        headers = _agent_header(None)
         return self.nexus.http.post(
-            f"/api/v2/pay/approvals/{approval_id}/reject"
+            f"/api/v2/pay/approvals/{approval_id}/reject", headers=headers
         )
 
 
@@ -228,10 +240,11 @@ class PayClient:
 
 
 def _agent_header(agent_id: str | None) -> dict[str, str]:
-    """Build optional X-Agent-ID header for per-agent scoping."""
+    """Build optional X-Agent-ID + X-Nexus-Zone-ID headers."""
+    headers: dict[str, str] = {"X-Nexus-Zone-ID": "corp"}
     if agent_id is not None:
-        return {"X-Agent-ID": agent_id}
-    return {}
+        headers["X-Agent-ID"] = agent_id
+    return headers
 
 
 def _build_pay_client(
