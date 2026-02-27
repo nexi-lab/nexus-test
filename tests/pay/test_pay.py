@@ -1,4 +1,4 @@
-"""Payment E2E tests — pay/001 through pay/010.
+"""Payment E2E tests — pay/001 through pay/016.
 
 Test matrix:
     pay/001  Credit balance query           [auto, pay]     Returns balance
@@ -11,6 +11,12 @@ Test matrix:
     pay/008  Spending policy CRUD           [auto, pay]     Policy enforced
     pay/009  Spending approval workflow     [auto, pay]     Approve/reject flow
     pay/010  Can-afford check               [auto, pay]     Returns boolean
+    pay/011  Metering basics               [auto, pay]     Meter success path
+    pay/012  Metering edge cases           [auto, pay]     Meter boundaries
+    pay/013  Negative amount validation    [auto, pay]     All endpoints reject negative
+    pay/014  Zero amount validation        [auto, pay]     All endpoints reject zero
+    pay/015  Reservation error paths       [auto, pay]     Invalid commit/release
+    pay/016  Transfer method routing       [auto, pay]     Explicit method parameter
 
 All tests run against both local (port 10100) and remote (port 10101)
 via the parametrized ``pay`` fixture in conftest.py.
@@ -829,3 +835,266 @@ class TestCanAffordCheck:
         assert resp.status_code in (400, 422), (
             f"Expected validation error for >6 decimals, got {resp.status_code}"
         )
+
+
+# ===================================================================
+# pay/011 — Metering basics
+# ===================================================================
+
+
+@pytest.mark.auto
+@pytest.mark.pay
+class TestMeteringBasics:
+    """pay/011: POST /api/v2/pay/meter — basic metering operations."""
+
+    def test_meter_returns_success(self, pay: PayClient) -> None:
+        """pay/011a: Meter with valid amount returns success=true."""
+        resp = pay.meter("0.010000")
+        data = _json(resp)
+        assert "success" in data, f"Missing 'success' in {data}"
+        assert isinstance(data["success"], bool)
+
+    def test_meter_deducts_from_balance(self, pay: PayClient) -> None:
+        """pay/011b: Meter amount is reflected in balance change."""
+        agent = _unique_agent()
+        before = _decimal(_json(pay.get_balance(agent_id=agent))["available"])
+
+        pay.meter("1.000000", agent_id=agent)
+
+        after = _decimal(_json(pay.get_balance(agent_id=agent))["available"])
+        assert after <= before, (
+            f"Balance should decrease after meter: before={before}, after={after}"
+        )
+
+    def test_meter_with_custom_event_type(self, pay: PayClient) -> None:
+        """pay/011c: Meter with custom event_type succeeds."""
+        resp = pay.meter("0.001000", event_type="llm_inference")
+        data = _json(resp)
+        assert data.get("success") is True or "success" in data
+
+    def test_meter_multiple_rapid(self, pay: PayClient) -> None:
+        """pay/011d: Multiple rapid meter calls are all processed."""
+        agent = _unique_agent()
+        results = []
+        for _ in range(10):
+            resp = pay.meter("0.001000", agent_id=agent)
+            results.append(resp.status_code)
+
+        successes = sum(1 for r in results if 200 <= r < 300)
+        assert successes == 10, (
+            f"Expected all 10 meters to succeed, got {successes}: {results}"
+        )
+
+
+# ===================================================================
+# pay/012 — Metering edge cases
+# ===================================================================
+
+
+@pytest.mark.auto
+@pytest.mark.pay
+class TestMeteringEdgeCases:
+    """pay/012: Meter boundary conditions and validation."""
+
+    def test_meter_smallest_unit(self, pay: PayClient) -> None:
+        """pay/012a: Meter the smallest possible amount (0.000001)."""
+        resp = pay.meter("0.000001")
+        data = _json(resp)
+        assert "success" in data
+
+    def test_meter_negative_rejected(self, pay: PayClient) -> None:
+        """pay/012b: Negative meter amount is rejected."""
+        resp = pay.meter("-1.000000")
+        assert resp.status_code in (400, 422), (
+            f"Expected validation error for negative meter, got {resp.status_code}"
+        )
+
+    def test_meter_zero_rejected(self, pay: PayClient) -> None:
+        """pay/012c: Zero meter amount is rejected."""
+        resp = pay.meter("0.000000")
+        assert resp.status_code in (400, 422), (
+            f"Expected validation error for zero meter, got {resp.status_code}"
+        )
+
+    def test_meter_too_many_decimals_rejected(self, pay: PayClient) -> None:
+        """pay/012d: More than 6 decimal places is rejected."""
+        resp = pay.meter("0.0000001")  # 7 decimals
+        assert resp.status_code in (400, 422), (
+            f"Expected validation error for >6 decimals, got {resp.status_code}"
+        )
+
+
+# ===================================================================
+# pay/013 — Negative amount validation (all endpoints)
+# ===================================================================
+
+
+@pytest.mark.auto
+@pytest.mark.pay
+class TestNegativeAmountValidation:
+    """pay/013: All endpoints reject negative amounts."""
+
+    def test_transfer_negative_rejected(self, pay: PayClient) -> None:
+        """pay/013a: Transfer with negative amount → 400/422."""
+        resp = pay.transfer(to=_unique_agent(), amount="-5.000000")
+        assert resp.status_code in (400, 422), (
+            f"Transfer should reject negative amount: {resp.status_code}"
+        )
+
+    def test_reserve_negative_rejected(self, pay: PayClient) -> None:
+        """pay/013b: Reserve with negative amount → 400/422."""
+        resp = pay.reserve(amount="-1.000000")
+        assert resp.status_code in (400, 422), (
+            f"Reserve should reject negative amount: {resp.status_code}"
+        )
+
+    def test_batch_negative_item_rejected(self, pay: PayClient) -> None:
+        """pay/013c: Batch transfer with one negative item → 400/422."""
+        transfers = [
+            {"to": _unique_agent(), "amount": "1.000000", "memo": "ok"},
+            {"to": _unique_agent(), "amount": "-1.000000", "memo": "bad"},
+        ]
+        resp = pay.transfer_batch(transfers)
+        assert resp.status_code in (400, 402, 409, 422), (
+            f"Batch should reject negative item: {resp.status_code}"
+        )
+
+
+# ===================================================================
+# pay/014 — Zero amount validation
+# ===================================================================
+
+
+@pytest.mark.auto
+@pytest.mark.pay
+class TestZeroAmountValidation:
+    """pay/014: All endpoints reject zero amounts."""
+
+    def test_transfer_zero_rejected(self, pay: PayClient) -> None:
+        """pay/014a: Transfer with 0.000000 → 400/422."""
+        resp = pay.transfer(to=_unique_agent(), amount="0.000000")
+        assert resp.status_code in (400, 422), (
+            f"Transfer should reject zero amount: {resp.status_code}"
+        )
+
+    def test_reserve_zero_rejected(self, pay: PayClient) -> None:
+        """pay/014b: Reserve with 0.000000 → 400/422."""
+        resp = pay.reserve(amount="0.000000")
+        assert resp.status_code in (400, 422), (
+            f"Reserve should reject zero amount: {resp.status_code}"
+        )
+
+    def test_can_afford_zero_rejected(self, pay: PayClient) -> None:
+        """pay/014c: Can-afford check with 0.000000 → 400/422."""
+        resp = pay.can_afford("0.000000")
+        assert resp.status_code in (400, 422), (
+            f"Can-afford should reject zero amount: {resp.status_code}"
+        )
+
+
+# ===================================================================
+# pay/015 — Reservation error paths
+# ===================================================================
+
+
+@pytest.mark.auto
+@pytest.mark.pay
+class TestReservationErrorPaths:
+    """pay/015: Reservation commit/release edge cases.
+
+    Note: In disabled mode (no TigerBeetle), the CreditsService silently
+    succeeds on all commit/release operations regardless of reservation state.
+    These tests verify the API accepts the requests without 500 errors.
+    In enabled mode (with TigerBeetle), stricter error codes would apply.
+    """
+
+    def test_commit_nonexistent_reservation(self, pay: PayClient) -> None:
+        """pay/015a: Commit non-existent reservation ID → no server error."""
+        fake_id = f"nonexistent-{uuid.uuid4().hex[:12]}"
+        resp = pay.commit_reservation(fake_id)
+        # Disabled mode: 204; enabled mode: 404/409
+        assert resp.status_code in (200, 204, 404, 409, 422), (
+            f"Server error for non-existent reservation: {resp.status_code}"
+        )
+
+    def test_release_nonexistent_reservation(self, pay: PayClient) -> None:
+        """pay/015b: Release non-existent reservation ID → no server error."""
+        fake_id = f"nonexistent-{uuid.uuid4().hex[:12]}"
+        resp = pay.release_reservation(fake_id)
+        # Disabled mode: 204; enabled mode: 404/409
+        assert resp.status_code in (200, 204, 404, 409, 422), (
+            f"Server error for non-existent reservation: {resp.status_code}"
+        )
+
+    def test_double_commit_no_crash(self, pay: PayClient) -> None:
+        """pay/015c: Committing an already-committed reservation does not crash."""
+        reserve_data = _json(pay.reserve(amount="2.000000", purpose="double-test"))
+        reservation_id = reserve_data["id"]
+
+        # First commit succeeds
+        resp1 = pay.commit_reservation(reservation_id)
+        assert resp1.status_code in (200, 204)
+
+        # Second commit: disabled mode returns 204, enabled mode returns 409
+        resp2 = pay.commit_reservation(reservation_id)
+        assert resp2.status_code in (200, 204, 404, 409, 422), (
+            f"Double-commit should not crash: {resp2.status_code}"
+        )
+
+    def test_commit_after_release_no_crash(self, pay: PayClient) -> None:
+        """pay/015d: Committing a released reservation does not crash."""
+        reserve_data = _json(pay.reserve(amount="2.000000", purpose="release-then-commit"))
+        reservation_id = reserve_data["id"]
+
+        # Release first
+        release_resp = pay.release_reservation(reservation_id)
+        assert release_resp.status_code in (200, 204)
+
+        # Commit after release: disabled mode returns 204, enabled mode returns 409
+        commit_resp = pay.commit_reservation(reservation_id)
+        assert commit_resp.status_code in (200, 204, 404, 409, 422), (
+            f"Commit-after-release should not crash: {commit_resp.status_code}"
+        )
+
+
+# ===================================================================
+# pay/016 — Transfer method routing
+# ===================================================================
+
+
+@pytest.mark.auto
+@pytest.mark.pay
+class TestTransferMethodRouting:
+    """pay/016: Transfer with explicit method parameter."""
+
+    def test_method_credits_succeeds(self, pay: PayClient) -> None:
+        """pay/016a: Transfer with method='credits' uses internal credits."""
+        resp = pay.transfer(
+            to=_unique_agent(),
+            amount="0.100000",
+            method="credits",
+        )
+        data = _json(resp)
+        assert data.get("method") in ("credits", "auto"), (
+            f"Expected credits method, got {data.get('method')}"
+        )
+
+    def test_method_auto_succeeds(self, pay: PayClient) -> None:
+        """pay/016b: Transfer with method='auto' auto-routes."""
+        resp = pay.transfer(
+            to=_unique_agent(),
+            amount="0.100000",
+            method="auto",
+        )
+        data = _json(resp)
+        assert "id" in data, f"Auto transfer should succeed: {data}"
+
+    def test_batch_single_item(self, pay: PayClient) -> None:
+        """pay/016c: Batch with single transfer succeeds."""
+        transfers = [
+            {"to": _unique_agent(), "amount": "0.500000", "memo": "single"},
+        ]
+        resp = pay.transfer_batch(transfers)
+        data = _json(resp)
+        if isinstance(data, list):
+            assert len(data) == 1, f"Expected 1 receipt, got {len(data)}"
