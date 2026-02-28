@@ -342,6 +342,26 @@ rather than injected test hooks. No `NEXUS_TEST_HOOKS` flag required.
 | eventlog/001 | Write emits event | auto,eventlog | Event in log |
 | eventlog/002 | Event filtering by type | auto,eventlog | Correct results |
 | eventlog/003 | Event replay | auto,eventlog | In-order replay |
+| events/001 | Write emits FILE_WRITE event | auto,events | Write event in log |
+| events/002 | Delete emits FILE_DELETE event | auto,events | Delete event in log |
+| events/003 | Replay cursor pagination monotonic | auto,events | Non-overlapping ordered pages |
+| events/004 | Event filtering by type | auto,events | Only matching types returned |
+| events/005 | Event filtering by zone_id | auto,events | Zone isolation verified |
+| events/006 | Event filtering by path pattern | auto,events | Path-specific events found |
+| events/007 | Events contain correct metadata | auto,events | id, timestamp, type, path present |
+| events/008 | Publish-to-replay latency < 500ms | auto,events | Latency under threshold |
+| events/009 | Unauthenticated cannot list events | auto,events,permissions | 401/403 returned |
+| events/010 | Agent sees events in own zone only | auto,events,permissions | No cross-zone leaks |
+| events/011 | Admin sees events across zones | auto,events,permissions | Multi-zone visibility |
+| events/012 | Agent cannot replay from other zone | auto,events,permissions | Replay denied or empty |
+| events/013 | Zone-scoped write → zone-scoped event | auto,events,permissions | zone_id on event |
+| events/014 | Event on zone A visible via replay | auto,events,federation | Same-zone replay works |
+| events/015 | Event not visible on zone B | auto,events,federation | Zone isolation across nodes |
+| events/016 | Cross-zone replay with admin key | auto,events,federation | Admin sees all zones |
+| events/017 | Federation round-trip latency < 1s | auto,events,federation | Latency under 1000ms |
+| events/018 | SSE event stream receives events | auto,events | SSE connection established |
+| events/019 | Replay durability across queries | auto,events | Events persist |
+| events/020 | Large batch (100 files) emits events | auto,events | ≥80% events captured |
 | sync/001 | Create sync job | auto,sync | Job runs |
 | sync/002 | Conflict detection | auto,sync | Conflicts flagged |
 | sync/003 | Conflict resolution | auto,sync | Resolved correctly |
