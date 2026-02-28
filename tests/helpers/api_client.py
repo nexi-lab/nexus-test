@@ -308,9 +308,75 @@ class NexusClient:
         }
         return self.rpc("add_mount", params)
 
-    def list_mounts(self) -> RpcResponse:
+    def list_mounts(self, *, zone: str | None = None) -> RpcResponse:
         """List filesystem mounts via JSON-RPC."""
-        return self.rpc("list_mounts")
+        return self.rpc("list_mounts", zone=zone)
+
+    def remove_mount(self, mount_point: str) -> RpcResponse:
+        """Remove a filesystem mount via JSON-RPC."""
+        return self.rpc("remove_mount", {"mount_point": mount_point})
+
+    def get_mount(self, mount_point: str) -> RpcResponse:
+        """Get mount details via JSON-RPC."""
+        return self.rpc("get_mount", {"mount_point": mount_point})
+
+    def has_mount(self, mount_point: str) -> RpcResponse:
+        """Check if a mount exists via JSON-RPC."""
+        return self.rpc("has_mount", {"mount_point": mount_point})
+
+    def list_connectors(self, category: str | None = None) -> RpcResponse:
+        """List available connector types via JSON-RPC."""
+        params: dict[str, Any] = {}
+        if category is not None:
+            params["category"] = category
+        return self.rpc("list_connectors", params)
+
+    def save_mount(
+        self,
+        mount_point: str,
+        backend_type: str,
+        backend_config: dict[str, Any] | None = None,
+        *,
+        priority: int = 0,
+        readonly: bool = False,
+        description: str | None = None,
+    ) -> RpcResponse:
+        """Save mount configuration to database via JSON-RPC."""
+        params: dict[str, Any] = {
+            "mount_point": mount_point,
+            "backend_type": backend_type,
+            "backend_config": backend_config or {},
+            "priority": priority,
+            "readonly": readonly,
+        }
+        if description is not None:
+            params["description"] = description
+        return self.rpc("save_mount", params)
+
+    def list_saved_mounts(self) -> RpcResponse:
+        """List saved mount configurations via JSON-RPC."""
+        return self.rpc("list_saved_mounts")
+
+    def load_mount(self, mount_point: str) -> RpcResponse:
+        """Load and activate a saved mount via JSON-RPC."""
+        return self.rpc("load_mount", {"mount_point": mount_point})
+
+    def delete_saved_mount(self, mount_point: str) -> RpcResponse:
+        """Delete a saved mount configuration via JSON-RPC."""
+        return self.rpc("delete_saved_mount", {"mount_point": mount_point})
+
+    def delete_connector(
+        self,
+        mount_point: str,
+        *,
+        revoke_oauth: bool = False,
+    ) -> RpcResponse:
+        """Delete a connector with bundled cleanup via JSON-RPC."""
+        params: dict[str, Any] = {
+            "mount_point": mount_point,
+            "revoke_oauth": revoke_oauth,
+        }
+        return self.rpc("delete_connector", params)
 
     # --- ReBAC RPC methods ---
 

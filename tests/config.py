@@ -67,6 +67,13 @@ class TestSettings(BaseSettings):
     herb_sample_size: int = 20  # Override via NEXUS_TEST_HERB_SAMPLE_SIZE
     herb_benchmark_dir: str = "~/nexus/benchmarks/herb"  # Override: NEXUS_TEST_HERB_BENCHMARK_DIR
 
+    # --- Zone-scoped keys for event isolation tests ---
+    zone_a_key: str = ""  # Override via NEXUS_TEST_ZONE_A_KEY
+    zone_b_key: str = ""  # Override via NEXUS_TEST_ZONE_B_KEY
+
+    # --- LLM tests ---
+    llm_model: str = "gpt-4o-mini"  # Override via NEXUS_TEST_LLM_MODEL
+
     # --- Timeouts (seconds) ---
     request_timeout: float = 60.0
     connect_timeout: float = 10.0
