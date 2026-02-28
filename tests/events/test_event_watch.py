@@ -38,63 +38,87 @@ class TestWatchEndpoint:
         Opens a watch request in a background thread, writes a file,
         then verifies the watch response includes the change.
         """
-        tag = uuid.uuid4().hex[:8]
-        path = f"{event_unique_path}/watch_{tag}.txt"
-        watch_result: list[dict] = []
-        watch_error: list[str] = []
-
-        def do_watch() -> None:
-            try:
-                resp = event_client.nexus.api_get(
-                    "/api/v2/watch",
-                    params={"path": f"**/*watch_{tag}*", "timeout": 10.0},
-                    timeout=httpx.Timeout(15.0, connect=5.0),
-                )
-                watch_result.append({
-                    "status": resp.status_code,
-                    "body": resp.json() if resp.status_code == 200 else {},
-                })
-            except Exception as exc:
-                watch_error.append(str(exc))
-
-        watcher = threading.Thread(target=do_watch, daemon=True)
-        watcher.start()
-
-        # Give watch thread time to connect
-        time.sleep(1.0)
-
-        # Trigger a file change
-        event_client.nexus.write_file(path, "watch detection test")
-
-        watcher.join(timeout=12.0)
-
-        if watch_error:
-            pytest.skip(f"Watch endpoint error: {watch_error[0]}")
-
-        if not watch_result:
-            pytest.skip("Watch endpoint did not respond in time")
-
-        result = watch_result[0]
-        if result["status"] == 501:
-            pytest.skip("Watch not available on this server (requires Redis event bus)")
-        if result["status"] == 404:
-            pytest.skip("Watch endpoint not found")
-        if result["status"] == 500:
-            pytest.skip("Watch returned transient 500 (concurrent EventsService race)")
-
-        assert result["status"] == 200, (
-            f"Watch returned {result['status']}"
-        )
-
-        body = result["body"]
-        changes = body.get("changes", [])
-        # Either we got changes or a timeout
-        if body.get("timeout", False) and not changes:
-            pytest.skip("Watch timed out before write propagated")
-
-        # Clean up
+        # Warm up the watch endpoint — first call often hits an asyncio
+        # event-loop mismatch in Redis Pub/Sub (transient 500).
         with contextlib.suppress(Exception):
-            event_client.nexus.delete_file(path)
+            event_client.nexus.api_get(
+                "/api/v2/watch",
+                params={"path": "/nonexistent/**", "timeout": 0.5},
+                timeout=httpx.Timeout(3.0, connect=2.0),
+            )
+
+        max_attempts = 3
+        last_status = 0
+        for attempt in range(max_attempts):
+            tag = uuid.uuid4().hex[:8]
+            path = f"{event_unique_path}/watch_{tag}.txt"
+            watch_result: list[dict] = []
+            watch_error: list[str] = []
+
+            def do_watch() -> None:
+                try:
+                    resp = event_client.nexus.api_get(
+                        "/api/v2/watch",
+                        params={"path": f"**/*watch_{tag}*", "timeout": 10.0},
+                        timeout=httpx.Timeout(15.0, connect=5.0),
+                    )
+                    watch_result.append({
+                        "status": resp.status_code,
+                        "body": resp.json() if resp.status_code == 200 else {},
+                    })
+                except Exception as exc:
+                    watch_error.append(str(exc))
+
+            watcher = threading.Thread(target=do_watch, daemon=True)
+            watcher.start()
+
+            # Give watch thread time to connect
+            time.sleep(1.0)
+
+            # Trigger a file change
+            event_client.nexus.write_file(path, "watch detection test")
+
+            watcher.join(timeout=12.0)
+
+            if watch_error:
+                pytest.skip(f"Watch endpoint error: {watch_error[0]}")
+
+            if not watch_result:
+                pytest.skip("Watch endpoint did not respond in time")
+
+            result = watch_result[0]
+            last_status = result["status"]
+            if result["status"] == 501:
+                pytest.skip("Watch not available on this server (requires Redis event bus)")
+            if result["status"] == 404:
+                pytest.skip("Watch endpoint not found")
+            if result["status"] == 500 and attempt < max_attempts - 1:
+                # Transient 500 from EventsService event-loop race — retry
+                time.sleep(1.0 + attempt)
+                with contextlib.suppress(Exception):
+                    event_client.nexus.delete_file(path)
+                continue
+
+            assert result["status"] == 200, (
+                f"Watch returned {result['status']} after {attempt + 1} attempts"
+            )
+
+            body = result["body"]
+            changes = body.get("changes", [])
+            # Either we got changes or a timeout
+            if body.get("timeout", False) and not changes:
+                pytest.skip("Watch timed out before write propagated")
+
+            # Clean up
+            with contextlib.suppress(Exception):
+                event_client.nexus.delete_file(path)
+            return
+
+        # Exhausted all retries
+        pytest.skip(
+            f"Watch returned {last_status} on all {max_attempts} attempts "
+            f"(transient event-loop race in Redis Pub/Sub)"
+        )
 
     @pytest.mark.nexus_test("events/045")
     def test_watch_respects_path_glob_filter(

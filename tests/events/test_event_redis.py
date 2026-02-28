@@ -124,23 +124,70 @@ class TestRedisEventBus:
     ) -> None:
         """events/028: SSE stream backed by Redis Pub/Sub receives live events.
 
-        Opens SSE connection, writes a file, verifies the event appears
-        in the stream within 5 seconds.
+        Opens SSE streaming connection, writes a file in background,
+        verifies the event appears in the stream.
         """
+        import json
+        import threading
+
         import httpx
 
-        path = f"{event_unique_path}/live_{uuid.uuid4().hex[:8]}.txt"
+        tag = uuid.uuid4().hex[:8]
+        path = f"{event_unique_path}/live_{tag}.txt"
+        filename = path.split("/")[-1]
 
+        from datetime import datetime, timezone
+
+        since_ts = datetime.now(timezone.utc).isoformat()
+
+        def write_after_delay() -> None:
+            time.sleep(1.0)
+            event_client.nexus.write_file(path, "redis live event test")
+
+        writer = threading.Thread(target=write_after_delay, daemon=True)
+        writer.start()
+
+        received_events: list[dict] = []
         try:
-            # Open SSE stream with short timeout
-            resp = event_client.stream_events(timeout=8.0)
-            assert resp.status_code == 200
-            assert "text/event-stream" in resp.headers.get("content-type", "")
+            with event_client.nexus.http.stream(
+                "GET",
+                "/api/v2/events/stream",
+                params={"since_timestamp": since_ts},
+                headers={"Accept": "text/event-stream"},
+                timeout=httpx.Timeout(15.0, connect=5.0),
+            ) as resp:
+                if resp.status_code != 200:
+                    pytest.skip(f"SSE returned {resp.status_code}")
+
+                deadline = time.monotonic() + 10.0
+                for line in resp.iter_lines():
+                    if time.monotonic() > deadline:
+                        break
+                    line = line.strip()
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        try:
+                            event = json.loads(data_str)
+                            received_events.append(event)
+                            if filename in event.get("path", ""):
+                                break
+                        except json.JSONDecodeError:
+                            pass
         except httpx.ReadTimeout:
-            # Acceptable — stream timed out waiting for events
-            pytest.skip("SSE stream timed out (no events within window)")
+            pass
         except httpx.ConnectError:
             pytest.skip("SSE endpoint not available")
+
+        writer.join(timeout=3.0)
+
+        matching = [e for e in received_events if filename in e.get("path", "")]
+        if not matching and not received_events:
+            pytest.skip("SSE stream produced no events")
+
+        assert len(matching) >= 1, (
+            f"Live event not delivered via Redis-backed SSE. "
+            f"Got {len(received_events)} events, none matching '{filename}'"
+        )
 
     @pytest.mark.nexus_test("events/029")
     def test_redis_health_check(

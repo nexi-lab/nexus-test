@@ -191,22 +191,34 @@ class TestSSEStreaming:
     ) -> None:
         """events/037: SSE sends keepalive comments on idle connection.
 
-        Keepalive format: ": keepalive\\n\\n" (SSE comment, every ~15s).
-        Wait up to 35s for a keepalive ping (server interval is ~15s).
+        Keepalive format: ": keepalive\\n\\n" (SSE comment).
+        Server sends keepalive when no events arrive within the keepalive
+        interval (default 15s, configurable via NEXUS_SSE_KEEPALIVE).
+        Watch a non-existent path to guarantee idle stream, wait up to 40s.
         """
         keepalive_found = False
+
+        # Use since_timestamp in the future to skip all historical events
+        # and guarantee an idle stream that will trigger keepalive
+        from datetime import datetime, timezone
+
+        future_ts = datetime.now(timezone.utc).isoformat()
 
         try:
             with event_client.nexus.http.stream(
                 "GET",
                 "/api/v2/events/stream",
+                params={
+                    "since_timestamp": future_ts,
+                    "path_pattern": "/nonexistent-keepalive-test/**",
+                },
                 headers={"Accept": "text/event-stream"},
-                timeout=httpx.Timeout(40.0, connect=3.0),
+                timeout=httpx.Timeout(45.0, connect=3.0),
             ) as resp:
                 if resp.status_code != 200:
                     pytest.skip(f"SSE returned {resp.status_code}")
 
-                deadline = time.monotonic() + 35.0
+                deadline = time.monotonic() + 40.0
                 for line in resp.iter_lines():
                     if time.monotonic() > deadline:
                         break
@@ -221,11 +233,9 @@ class TestSSEStreaming:
         except httpx.ConnectError:
             pytest.skip("SSE endpoint not available")
 
-        if not keepalive_found:
-            pytest.skip(
-                "No keepalive received within 35s "
-                "(server may use longer interval or not support keepalive)"
-            )
+        assert keepalive_found, (
+            "No keepalive received within 40s — server SSE keepalive may be broken"
+        )
 
     @pytest.mark.nexus_test("events/038")
     def test_sse_zone_filtering(
