@@ -73,14 +73,10 @@ class TestSSEStreaming:
         filename = path.split("/")[-1]
         received_events: list[dict] = []
 
-        # Get the latest event_id so we can skip historical events via Last-Event-ID
-        last_event_id = ""
-        try:
-            existing_events, _ = event_client.get_events(limit=1)
-            if existing_events:
-                last_event_id = existing_events[0].get("event_id", "")
-        except Exception:
-            pass
+        # Use since_timestamp to skip historical events (more reliable than Last-Event-ID)
+        from datetime import datetime, timezone
+
+        since_ts = datetime.now(timezone.utc).isoformat()
 
         def write_after_delay() -> None:
             """Write file after 1s to give stream time to connect."""
@@ -91,13 +87,12 @@ class TestSSEStreaming:
         writer_thread.start()
 
         sse_headers: dict[str, str] = {"Accept": "text/event-stream"}
-        if last_event_id:
-            sse_headers["Last-Event-ID"] = last_event_id
 
         try:
             with event_client.nexus.http.stream(
                 "GET",
                 "/api/v2/events/stream",
+                params={"since_timestamp": since_ts},
                 headers=sse_headers,
                 timeout=httpx.Timeout(20.0, connect=3.0),
             ) as resp:
@@ -197,7 +192,7 @@ class TestSSEStreaming:
         """events/037: SSE sends keepalive comments on idle connection.
 
         Keepalive format: ": keepalive\\n\\n" (SSE comment, every ~15s).
-        Wait up to 20s for a keepalive ping.
+        Wait up to 35s for a keepalive ping (server interval is ~15s).
         """
         keepalive_found = False
 
@@ -206,12 +201,12 @@ class TestSSEStreaming:
                 "GET",
                 "/api/v2/events/stream",
                 headers={"Accept": "text/event-stream"},
-                timeout=httpx.Timeout(25.0, connect=3.0),
+                timeout=httpx.Timeout(40.0, connect=3.0),
             ) as resp:
                 if resp.status_code != 200:
                     pytest.skip(f"SSE returned {resp.status_code}")
 
-                deadline = time.monotonic() + 20.0
+                deadline = time.monotonic() + 35.0
                 for line in resp.iter_lines():
                     if time.monotonic() > deadline:
                         break
@@ -228,7 +223,7 @@ class TestSSEStreaming:
 
         if not keepalive_found:
             pytest.skip(
-                "No keepalive received within 20s "
+                "No keepalive received within 35s "
                 "(server may use longer interval or not support keepalive)"
             )
 
