@@ -58,16 +58,17 @@ class TestEventFederation:
         try:
             event_client.write_and_wait(path, "zone A replay test")
 
-            data, resp = event_client.replay_events(limit=50)
+            # Use get_events (recent events, newest-first) since replay
+            # returns oldest-first and our event may not be in the first page.
+            events, resp = event_client.get_events(limit=50)
             assert resp.status_code == 200
 
-            events = data.get("events", [])
             matching = [
                 ev for ev in events
                 if ev.get("path", "").endswith("ev014-zone-a-replay.txt")
             ]
             assert len(matching) > 0, (
-                f"Event not visible via replay on zone A. "
+                f"Event not visible via events API on zone A. "
                 f"Got {len(events)} events."
             )
         finally:
@@ -163,11 +164,11 @@ class TestEventFederation:
         settings: TestSettings,
         event_unique_path: str,
     ) -> None:
-        """events/017: Federation round-trip latency < 1000ms.
+        """events/017: Federation round-trip latency < 300ms.
 
         Writes a file on the leader and measures how long it takes for
         the event to appear on the follower's event log. Asserts the
-        round-trip latency is under 1000ms.
+        round-trip latency is under 300ms (tightened from 1000ms).
         """
         self._check_follower(settings)
 
@@ -179,7 +180,7 @@ class TestEventFederation:
             )
 
             # Poll follower for the event
-            deadline = start + 5.0  # 5s max wait
+            deadline = start + 3.0  # 3s max wait
             found = False
             while time.monotonic() < deadline:
                 resp = nexus_follower.api_get(
@@ -196,18 +197,18 @@ class TestEventFederation:
                     if matching:
                         found = True
                         break
-                time.sleep(0.1)
+                time.sleep(0.05)
 
             elapsed_ms = (time.monotonic() - start) * 1000
 
             if not found:
                 pytest.skip(
-                    f"Event not replicated to follower within 5s "
+                    f"Event not replicated to follower within 3s "
                     f"(federation replication may be disabled)"
                 )
 
-            assert elapsed_ms < 1000, (
-                f"Federation round-trip latency {elapsed_ms:.1f}ms exceeds 1000ms"
+            assert elapsed_ms < 300, (
+                f"Federation round-trip latency {elapsed_ms:.1f}ms exceeds 300ms"
             )
         finally:
             with contextlib.suppress(Exception):

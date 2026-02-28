@@ -1,7 +1,7 @@
 """Event subsystem test fixtures.
 
 Provides EventClient wrapper with latency measurement and helper fixtures
-for the events/ test suite (events/001-020).
+for the events/ test suite (events/001-064).
 
 References:
     - Event API: GET /api/v2/events, /api/v2/events/replay, /api/v2/events/stream
@@ -14,12 +14,15 @@ import contextlib
 import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
 
 from tests.helpers.api_client import NexusClient
+
+if TYPE_CHECKING:
+    from tests.config import TestSettings
 
 
 @dataclass(frozen=True)
@@ -126,6 +129,35 @@ class EventClient:
             timeout=httpx.Timeout(timeout, connect=5.0),
         )
 
+    def watch_for_changes(
+        self,
+        *,
+        path: str = "/**/*",
+        timeout: float = 5.0,
+    ) -> tuple[dict[str, Any], httpx.Response]:
+        """Long-poll the watch endpoint for filesystem changes.
+
+        Returns (watch_data_dict, response). Skips if 501 (not available).
+        """
+        start = time.monotonic()
+        resp = self.nexus.api_get(
+            "/api/v2/watch",
+            params={"path": path, "timeout": timeout},
+            timeout=httpx.Timeout(timeout + 5.0, connect=5.0),
+        )
+        elapsed_ms = (time.monotonic() - start) * 1000
+
+        self.measurements.append(
+            LatencyMeasurement("watch", elapsed_ms, resp.status_code == 200)
+        )
+
+        if resp.status_code == 501:
+            pytest.skip("Watch not available (requires Redis event bus)")
+        if resp.status_code == 404:
+            pytest.skip("Watch endpoint not found")
+
+        return resp.json(), resp
+
     def write_and_wait(
         self,
         path: str,
@@ -205,6 +237,34 @@ def event_client(nexus: NexusClient) -> EventClient:
 def event_unique_path(unique_path: str) -> str:
     """Unique path prefix for event tests."""
     return f"{unique_path}/events"
+
+
+@pytest.fixture
+def zone_a_client(
+    nexus: NexusClient, settings: "TestSettings",
+) -> Generator[EventClient]:
+    """EventClient authenticated as zone-a user (non-admin)."""
+    if not settings.zone_a_key:
+        pytest.skip("NEXUS_TEST_ZONE_A_KEY not configured")
+    client = nexus.for_zone(settings.zone_a_key)
+    try:
+        yield EventClient(nexus=client)
+    finally:
+        client.http.close()
+
+
+@pytest.fixture
+def zone_b_client(
+    nexus: NexusClient, settings: "TestSettings",
+) -> Generator[EventClient]:
+    """EventClient authenticated as zone-b user (non-admin)."""
+    if not settings.zone_b_key:
+        pytest.skip("NEXUS_TEST_ZONE_B_KEY not configured")
+    client = nexus.for_zone(settings.zone_b_key)
+    try:
+        yield EventClient(nexus=client)
+    finally:
+        client.http.close()
 
 
 @pytest.fixture

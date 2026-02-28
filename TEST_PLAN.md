@@ -349,7 +349,7 @@ rather than injected test hooks. No `NEXUS_TEST_HOOKS` flag required.
 | events/005 | Event filtering by zone_id | auto,events | Zone isolation verified |
 | events/006 | Event filtering by path pattern | auto,events | Path-specific events found |
 | events/007 | Events contain correct metadata | auto,events | id, timestamp, type, path present |
-| events/008 | Publish-to-replay latency < 500ms | auto,events | Latency under threshold |
+| events/008 | Publish-to-replay latency < 200ms | auto,events | Latency under threshold |
 | events/009 | Unauthenticated cannot list events | auto,events,permissions | 401/403 returned |
 | events/010 | Agent sees events in own zone only | auto,events,permissions | No cross-zone leaks |
 | events/011 | Admin sees events across zones | auto,events,permissions | Multi-zone visibility |
@@ -358,10 +358,54 @@ rather than injected test hooks. No `NEXUS_TEST_HOOKS` flag required.
 | events/014 | Event on zone A visible via replay | auto,events,federation | Same-zone replay works |
 | events/015 | Event not visible on zone B | auto,events,federation | Zone isolation across nodes |
 | events/016 | Cross-zone replay with admin key | auto,events,federation | Admin sees all zones |
-| events/017 | Federation round-trip latency < 1s | auto,events,federation | Latency under 1000ms |
+| events/017 | Federation round-trip latency < 300ms | auto,events,federation | Latency under 300ms |
 | events/018 | SSE event stream receives events | auto,events | SSE connection established |
 | events/019 | Replay durability across queries | auto,events | Events persist |
 | events/020 | Large batch (100 files) emits events | auto,events | ≥80% events captured |
+| events/021 | Zone-A user sees only zone-A events | auto,events,permissions | No cross-zone leaks |
+| events/022 | Zone-B cannot see zone-A events | auto,events,permissions | Full cross-zone isolation |
+| events/023 | Admin sees all zones events | auto,events,permissions | Multi-zone admin visibility |
+| events/024 | Replay endpoint enforces zone isolation | auto,events,permissions | Replay zone-scoped |
+| events/025 | Redis Pub/Sub zone channel isolation | events | Per-zone channel verified |
+| events/026 | Dedup prevents duplicate events | events | TTLCache dedup works |
+| events/027 | Batch write (50 files) proportional events | events | ≥80% captured via pipeline |
+| events/028 | Redis subscribe receives live events | events | SSE + Redis Pub/Sub |
+| events/029 | Redis health check endpoint | events | Health includes event bus |
+| events/030 | 10 concurrent writers all events captured | events | ≥80% of 50 files |
+| events/031 | Rapid sequential burst no event loss | events | 30 files, ≥80% captured |
+| events/032 | 200-file batch delivery keeps up | events | Scale test within 10s |
+| events/033 | Concurrent readers+writers consistent | events | No duplicate event_ids |
+| events/034 | SSE headers (text/event-stream) | events | Correct content-type |
+| events/035 | SSE live write event delivery | events | Event in stream |
+| events/036 | SSE retry field for reconnect | events | Valid integer retry |
+| events/037 | SSE keepalive pings on idle | events | Keepalive within 20s |
+| events/038 | SSE zone filtering via param | events | Zone-scoped stream |
+| events/039 | NATS exporter events delivered | events | Event in replay |
+| events/040 | NATS exporter dedup idempotent | events | ≤3 events for 2 writes |
+| events/041 | NATS zone-scoped subjects | events | zone_id present |
+| events/042 | Exporter health via features | events | Features endpoint works |
+| events/043 | Events persist after batch delivery | events | ≥80% of 10 files |
+| events/044 | Watch detects file write | events | Change in watch response |
+| events/045 | Watch respects path glob filter | events | .txt not in .log filter |
+| events/046 | Watch returns timeout when no changes | events | timeout: true |
+| events/047 | Watch validates timeout range | events | 422 for invalid timeout |
+| events/048 | Watch default path catches all | events | Default /**/* works |
+| events/049 | mkdir emits DIR_CREATE event | events | dir_create event |
+| events/050 | rmdir emits DIR_DELETE event | events | dir_delete event |
+| events/051 | rename emits FILE_RENAME event | events | old_path + new_path |
+| events/052 | Replay event_types filter | events | Only matching types |
+| events/053 | Replay path_pattern filter | events | Only matching paths |
+| events/054 | Replay since_timestamp filter | events | Recent events only |
+| events/055 | Replay agent_id filter | events | Agent-scoped results |
+| events/056 | SSE Last-Event-ID resume | events | Resume from position |
+| events/057 | Metrics endpoint HTTP counters | events | Prometheus metrics |
+| events/058 | Events monotonic sequence numbers | events | Increasing seq_number |
+| events/059 | Replay since_revision filter | events | Events after cursor |
+| events/060 | Operations returns recent entries | events | Operation list |
+| events/061 | Operations include write entry | events | Write in log |
+| events/062 | Operations include delete entry | events | Delete in log |
+| events/063 | Operations endpoint pagination | events | Cursor-based pages |
+| events/064 | Operations entries required fields | events | id, type, path present |
 | sync/001 | Create sync job | auto,sync | Job runs |
 | sync/002 | Conflict detection | auto,sync | Conflicts flagged |
 | sync/003 | Conflict resolution | auto,sync | Resolved correctly |
