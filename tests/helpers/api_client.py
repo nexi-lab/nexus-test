@@ -378,6 +378,70 @@ class NexusClient:
         }
         return self.rpc("delete_connector", params)
 
+    # --- Sync RPC methods ---
+
+    def sync_mount(
+        self,
+        mount_point: str | None = None,
+        *,
+        path: str | None = None,
+        recursive: bool = True,
+        dry_run: bool = False,
+        sync_content: bool = True,
+        include_patterns: list[str] | None = None,
+        exclude_patterns: list[str] | None = None,
+    ) -> RpcResponse:
+        """Sync metadata/content from a mounted backend via JSON-RPC."""
+        params: dict[str, Any] = {
+            "recursive": recursive,
+            "dry_run": dry_run,
+            "sync_content": sync_content,
+        }
+        if mount_point is not None:
+            params["mount_point"] = mount_point
+        if path is not None:
+            params["path"] = path
+        if include_patterns is not None:
+            params["include_patterns"] = include_patterns
+        if exclude_patterns is not None:
+            params["exclude_patterns"] = exclude_patterns
+        return self.rpc("sync_mount", params)
+
+    def sync_mount_async(
+        self,
+        mount_point: str,
+        *,
+        sync_content: bool = True,
+    ) -> RpcResponse:
+        """Start an async sync job via JSON-RPC."""
+        return self.rpc("sync_mount_async", {
+            "mount_point": mount_point,
+            "sync_content": sync_content,
+        })
+
+    def get_sync_job(self, job_id: str) -> RpcResponse:
+        """Get sync job status via JSON-RPC."""
+        return self.rpc("get_sync_job", {"job_id": job_id})
+
+    def cancel_sync_job(self, job_id: str) -> RpcResponse:
+        """Cancel a running sync job via JSON-RPC."""
+        return self.rpc("cancel_sync_job", {"job_id": job_id})
+
+    def list_sync_jobs(
+        self,
+        mount_point: str | None = None,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> RpcResponse:
+        """List sync jobs via JSON-RPC."""
+        params: dict[str, Any] = {"limit": limit}
+        if mount_point is not None:
+            params["mount_point"] = mount_point
+        if status is not None:
+            params["status"] = status
+        return self.rpc("list_sync_jobs", params)
+
     # --- ReBAC RPC methods ---
 
     def rebac_create(
