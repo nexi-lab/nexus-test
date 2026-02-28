@@ -136,10 +136,8 @@ class TestWatchEndpoint:
             result = do_watch_and_write()
         except httpx.ReadTimeout:
             pytest.skip("Watch timed out (acceptable)")
-            return
         except httpx.ConnectError:
             pytest.skip("Watch endpoint not available")
-            return
 
         writer.join(timeout=5.0)
 
@@ -186,7 +184,6 @@ class TestWatchEndpoint:
             return
         except httpx.ConnectError:
             pytest.skip("Watch endpoint not available")
-            return
 
         if resp.status_code == 501:
             pytest.skip("Watch not available")
@@ -226,7 +223,6 @@ class TestWatchEndpoint:
             )
         except httpx.ConnectError:
             pytest.skip("Watch endpoint not available")
-            return
 
         if resp.status_code == 501:
             pytest.skip("Watch not available")
