@@ -314,6 +314,27 @@ rather than injected test hooks. No `NEXUS_TEST_HOOKS` flag required.
 | agent/002 | Agent heartbeat | auto,agent | Status updated |
 | agent/003 | Agent capability query | auto,agent | Filtered by capability |
 | agent/004 | Agent lifecycle FSM | auto,agent | Correct state transitions |
+| agent/005 | Update agent (name, description, metadata) | auto,agent | Fields updated, agent_id unchanged |
+| agent/006 | Get agent by ID | auto,agent | Returns correct agent with enriched fields |
+| agent/007 | List all agents | auto,agent | Registered agents appear in list |
+| agent/008 | Delete agent | auto,agent | Agent removed, subsequent get returns None |
+| agent/009 | Agent state transitions (UNKNOWN→CONNECTED→IDLE→CONNECTED) | auto,agent | Valid transitions succeed, generation increments on CONNECTED |
+| agent/010 | Invalid state transition rejected | auto,agent | Invalid transition returns error |
+| agent/011 | Optimistic locking (stale generation) | auto,agent | Stale expected_generation rejected |
+| agent/012 | Agent heartbeat via RPC | auto,agent | Heartbeat recorded, `{"ok": true}` returned |
+| agent/013 | List agents by zone (with state filter) | auto,agent | Only matching zone+state agents returned |
+| agent/014 | Set agent spec via REST | auto,agent | Spec stored, spec_generation=1 |
+| agent/015 | Update agent spec (generation increments) | auto,agent | spec_generation monotonically increases |
+| agent/016 | Get agent spec via REST | auto,agent | Stored spec matches what was set |
+| agent/017 | Get agent status via REST | auto,agent | Status contains phase, conditions, resource_usage |
+| agent/018 | Trigger agent warmup via REST | auto,agent | Warmup result returned (success or error) |
+| agent/019 | Invalid QoS class rejected | auto,agent | PUT /spec returns 422 for unknown QoS |
+| agent/020 | Spec/status 404 for nonexistent agent | auto,agent | GET returns 404 |
+| agent/021 | Delete nonexistent agent | auto,agent | Returns false / not-found gracefully |
+| agent/022 | Duplicate registration idempotent | auto,agent | Second register does not error |
+| agent/023 | Register with API key generation | auto,agent | Response includes api_key field |
+| agent/024 | Agent resource limits in spec | auto,agent | token_budget, storage_limit_mb round-trip |
+| agent/025 | Cross-zone agent discovery | auto,agent,federation | Agent registered on leader visible from follower |
 | scheduler/001 | Schedule task | auto,scheduler | Task created |
 | scheduler/002 | Task retry with backoff | auto,scheduler | Retried correctly |
 | scheduler/003 | Task priority ordering | auto,scheduler | High first |
