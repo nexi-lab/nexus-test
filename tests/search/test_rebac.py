@@ -36,40 +36,39 @@ class TestSearchReBAC:
             nexus.search_refresh(path)
             time.sleep(2)
 
-            # Search within the correct zone should find it (if BM25 reindexes)
-            # Search with a zone header for a different zone should NOT find it
-            # Since we don't have a separate zone key, we verify the path is zone-scoped
+            # Search within the correct zone should find the canary file.
+            # Zone scoping is enforced at the DB level (WHERE zone_id = :zone_id),
+            # NOT by path prefix convention — txtai stores paths as-is.
             search_resp = nexus.search_query(
                 canary, search_type="keyword", limit=5
             )
             assert search_resp.status_code == 200
 
-            # The search daemon returns paths with zone prefixes
-            # Files are stored under /zone/{zone_id}/... internally
             results = search_resp.json().get("results", [])
-            for result in results:
-                result_path = result.get("path", "")
-                # If the file appears, it should be in the correct zone
-                if canary in result.get("chunk_text", ""):
-                    assert f"/zone/{zone_a}/" in result_path or zone_a in result_path, (
-                        f"File found outside expected zone: {result_path}"
-                    )
+            # The canary file should appear in results for its own zone
+            found = any(
+                canary in (r.get("chunk_text", "") + r.get("path", ""))
+                for r in results
+            )
+            assert found, (
+                f"Canary file not found in search results for zone {zone_a!r}. "
+                f"Got {len(results)} results: "
+                f"{[r.get('path', '') for r in results]}"
+            )
         finally:
             with contextlib.suppress(Exception):
                 nexus.delete_file(path, zone=zone_a)
 
-    def test_search_results_contain_zone_paths(self, nexus: NexusClient) -> None:
-        """All search results include zone-scoped paths."""
+    def test_search_results_contain_valid_paths(self, nexus: NexusClient) -> None:
+        """All search results include valid absolute paths."""
         resp = nexus.search_query("document", search_type="keyword", limit=10)
         assert resp.status_code == 200
 
         results = resp.json().get("results", [])
         if not results:
-            pytest.skip("No search results to verify zone scoping")
+            pytest.skip("No search results to verify path format")
 
         for result in results:
             path = result.get("path", "")
-            # Paths should start with /zone/ prefix
-            assert path.startswith("/zone/") or path.startswith("/"), (
-                f"Unexpected path format: {path}"
-            )
+            # Paths should be absolute (start with /)
+            assert path.startswith("/"), f"Unexpected path format: {path}"
