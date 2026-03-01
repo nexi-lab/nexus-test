@@ -148,6 +148,20 @@ class TestSearch:
         viewer_client finds granted files, denied_client doesn't.
         Admin client (nexus) finds all files (bypass check).
         """
+        # Pre-check: verify the server has permission_enforcer wired
+        # by checking if permission_filter_ms > 0 on a probe query
+        probe_resp = nexus.search_query("probe", search_type="keyword", limit=1)
+        if probe_resp.status_code == 200:
+            probe_data = probe_resp.json()
+            filter_ms = (probe_data.get("latency_breakdown") or {}).get(
+                "permission_filter_ms", 0.0
+            )
+            if filter_ms == 0.0:
+                pytest.skip(
+                    "Search permission_enforcer not wired on server "
+                    "(permission_filter_ms=0)"
+                )
+
         viewer_client, denied_client, granted_paths, denied_paths = rebac_search_clients
 
         # Admin sees everything

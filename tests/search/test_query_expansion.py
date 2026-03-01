@@ -71,11 +71,16 @@ class TestQueryExpansion:
         assert exp_resp.status_code == 200
         exp_data = exp_resp.json()
 
-        expanded = (
+        # Extract the expanded query text — expansions may be dicts with "text" key
+        raw = (
             exp_data.get("expanded_query")
             or (exp_data.get("expansions", [None])[0])
             or (exp_data.get("queries", [None])[0])
         )
+        if isinstance(raw, dict):
+            expanded = raw.get("text") or raw.get("query") or str(raw)
+        else:
+            expanded = raw
         if not expanded or expanded == original_query:
             pytest.skip("Expansion didn't produce a different query")
 
