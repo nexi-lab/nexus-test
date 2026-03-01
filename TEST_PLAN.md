@@ -335,10 +335,31 @@ rather than injected test hooks. No `NEXUS_TEST_HOOKS` flag required.
 | agent/023 | Register with API key generation | auto,agent | Response includes api_key field |
 | agent/024 | Agent resource limits in spec | auto,agent | token_budget, storage_limit_mb round-trip |
 | agent/025 | Cross-zone agent discovery | auto,agent,federation | Agent registered on leader visible from follower |
-| scheduler/001 | Schedule task | auto,scheduler | Task created |
-| scheduler/002 | Task retry with backoff | auto,scheduler | Retried correctly |
-| scheduler/003 | Task priority ordering | auto,scheduler | High first |
-| scheduler/004 | Task cancellation | auto,scheduler | Graceful stop |
+| scheduler/001 | Submit task — ID, status, priority_tier | quick,auto,scheduler | Submit + round-trip GET |
+| scheduler/002 | Idempotency key retry — same ID or 409 | quick,auto,scheduler | Submit x2 same key |
+| scheduler/003 | Priority ordering — 4 tiers verified | auto,scheduler | Submit 4 tiers, verify each |
+| scheduler/004 | Task cancellation — status→cancelled | quick,auto,scheduler | Submit, cancel, verify |
+| scheduler/005 | Classify CRITICAL→INTERACTIVE | quick,auto,scheduler | classify endpoint |
+| scheduler/006 | Classify NORMAL→BATCH | auto,scheduler | classify endpoint |
+| scheduler/007 | Classify LOW→BACKGROUND | auto,scheduler | classify endpoint |
+| scheduler/008 | IO_WAIT promotes BACKGROUND→BATCH | auto,scheduler | classify(low, io_wait) |
+| scheduler/009 | All request states valid | auto,scheduler | classify with each state |
+| scheduler/010 | Classify invalid input → 422 | auto,scheduler | classify bad priority |
+| scheduler/011 | Get status by ID — all fields | auto,scheduler | submit, get, verify fields |
+| scheduler/012 | Get nonexistent → 404 | auto,scheduler | GET random UUID |
+| scheduler/013 | Cancel already cancelled — idempotent | auto,scheduler | cancel twice |
+| scheduler/014 | Metrics endpoint shape | auto,scheduler | GET /metrics, verify keys |
+| scheduler/015 | Metrics after submits — counts | auto,scheduler | submit 3 tiers, check counts |
+| scheduler/016 | Astraea fields in submit response | auto,scheduler | verify priority_class |
+| scheduler/017 | Zone isolation | auto,scheduler | submit zone A, verify zone B separate |
+| scheduler/018 | Submit latency p95 < 200ms | perf,scheduler | 20 submits, LatencyCollector |
+| scheduler/019 | Status query latency p95 < 100ms | perf,scheduler | 30 GETs, LatencyCollector |
+| scheduler/020 | Classify latency p95 < 100ms | perf,scheduler | 30 classifies, LatencyCollector |
+| scheduler/021 | Concurrent submit (20 tasks) | stress,scheduler | ThreadPoolExecutor, all succeed |
+| scheduler/022 | Burst + cancel cycle (10 tasks) | stress,scheduler | submit 10 → cancel all → verify |
+| scheduler/023 | Unauthenticated access rejected | auto,scheduler | submit/classify/metrics → 401 |
+| scheduler/024 | Invalid API key rejected | auto,scheduler | bad Bearer token → 401/403 |
+| scheduler/025 | Task visible to creator | auto,scheduler | retrieve own task, 404 on fake UUID |
 | eventlog/001 | Write emits event | auto,eventlog | Event in log |
 | eventlog/002 | Event filtering by type | auto,eventlog | Correct results |
 | eventlog/003 | Event replay | auto,eventlog | In-order replay |
