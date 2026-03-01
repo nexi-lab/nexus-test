@@ -144,8 +144,8 @@ class TestHerbCI:
             nexus,
             settings.herb_benchmark_dir,
             base_path,
-            max_products=3,
-            max_files_per_product=6,
+            max_products=1,
+            max_files_per_product=100,
             zone=settings.zone,
         )
         if not seeded:
